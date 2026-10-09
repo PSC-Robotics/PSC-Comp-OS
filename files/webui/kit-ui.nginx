@@ -15,4 +15,19 @@ server {
         # as directory, then fall back to displaying a 404.
         try_files $uri $uri/ =404;
     }
+
+    location = /calibrate {
+        try_files /calibrate.html =404;
+    }
+
+    location = /calibrate/ {
+        try_files /calibrate.html =404;
+    }
+
+    location /api/ {
+        proxy_pass http://127.0.0.1:8765;
+        proxy_set_header Host $host;
+        proxy_buffering off;
+        proxy_read_timeout 1h;
+    }
 }

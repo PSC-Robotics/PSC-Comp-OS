@@ -1,0 +1,12 @@
+[Unit]
+Description=Pi 3 onboard Wi-Fi firmware fallback
+After=systemd-modules-load.service
+Before=astwifid.service
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/sbin/psc-pi3-wifi-recovery.sh
+RemainAfterExit=yes
+
+[Install]
+WantedBy=multi-user.target

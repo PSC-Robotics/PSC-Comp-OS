@@ -44,6 +44,11 @@
       "destination": "/tmp/packer"
     },
     {
+      "type": "file",
+      "source": "/psc-sr-robot3/",
+      "destination": "/tmp/psc-sr-robot3"
+    },
+    {
       "type": "shell",
       "environment_vars": [
         "SROBO_NAME={{user `SROBO_NAME`}}",

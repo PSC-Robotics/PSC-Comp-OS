@@ -1,0 +1,16 @@
+[Unit]
+Description=PSC Robotics camera calibration service
+After=network.target
+
+[Service]
+Type=simple
+User=robot
+Group=robot
+Environment=PSC_CALIBRATION_DIR=/var/lib/psc-robotics/calibrations
+Environment=PSC_CAMERA_USB_ROOT=/media/robot
+Environment=OPENCV_CALIBRATIONS=/var/lib/psc-robotics/calibrations
+ExecStart=/home/robot/.pyenv/versions/3.11.5/bin/python /usr/local/lib/psc-camera-calibration.py
+Restart=on-failure
+
+[Install]
+WantedBy=multi-user.target

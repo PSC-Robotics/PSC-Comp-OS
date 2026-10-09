@@ -8,15 +8,23 @@ apt-get -y install nginx
 UI_URL="https://api.github.com/repos/srobo/kit-ui/releases/latest"
 
 mkdir /tmp/webui
-curl -s $UI_URL \
-| sed -nr 's/"browser_download_url": "(.*\.zip)"/\1/p' \
-| wget -O /tmp/webui/webui.zip -qi -
+curl --fail --location --silent --show-error "$UI_URL" -o /tmp/webui/release.json
+UI_ZIP_URL="$(sed -nr 's/^[[:space:]]*"browser_download_url": "(.*\.zip)".*/\1/p' /tmp/webui/release.json | head -n 1)"
+if [ -z "$UI_ZIP_URL" ]; then
+	echo "Unable to find a kit-ui release archive at $UI_URL" >&2
+	exit 1
+fi
+curl --fail --location --silent --show-error "$UI_ZIP_URL" -o /tmp/webui/webui.zip
 
 # Move website to webserver dir
 unzip /tmp/webui/webui.zip -d /tmp/webui/
 
 mkdir /usr/share/kit-ui
 mv /tmp/webui/dist/* /usr/share/kit-ui/
+install -o root -g root -m 644 /tmp/packer/webui/calibrate.html /usr/share/kit-ui/calibrate.html
+
+# Add a stable link from the downloaded main UI to the local calibration page.
+sed -i 's|</body>|<p><a href="/calibrate">Camera calibration</a></p></body>|' /usr/share/kit-ui/index.html
 
 chown -R root:www-data /usr/share/kit-ui
 chmod -R 755 /usr/share/kit-ui
@@ -24,3 +32,6 @@ chmod -R 755 /usr/share/kit-ui
 # Set config
 rm /etc/nginx/sites-enabled/default
 mv /tmp/packer/webui/kit-ui.nginx /etc/nginx/sites-enabled/
+
+nginx -t
+systemctl enable nginx.service

@@ -1,10 +1,14 @@
 #!/bin/bash
 set -eux -o pipefail
 
-# Install udiskie
+# Install udiskie and the Wi-Fi access-point support used by the robot image.
 apt-get -y install udiskie hostapd
 
-# disable default hostapd task
+# Configure the built-in hostapd service for the robot's Wi-Fi network.
+install -o root -g root -m 600 /tmp/packer/network/hostapd.conf /etc/hostapd/hostapd.conf
+if [ -f /etc/default/hostapd ]; then
+    sed -i 's|^#?DAEMON_CONF=.*|DAEMON_CONF="/etc/hostapd/hostapd.conf"|' /etc/default/hostapd
+fi
 systemctl disable hostapd.service
 raspi-config nonint do_wifi_country GB
 
@@ -29,6 +33,25 @@ chmod 644 /etc/astoria.toml
 
 mkdir -p /var/srobo/cache/
 chown -R robot:robot /var/srobo/cache/
+
+# Writable calibration directory for team-specific USB cameras.
+mkdir -p /var/lib/psc-robotics/calibrations
+chown -R robot:robot /var/lib/psc-robotics
+chmod 755 /var/lib/psc-robotics /var/lib/psc-robotics/calibrations
+
+# Local camera calibration service.
+install -o root -g root -m 755 /tmp/packer/calibration/psc-camera-calibration.py \
+    /usr/local/lib/psc-camera-calibration.py
+install -o root -g root -m 644 /tmp/packer/calibration/psc-camera-calibration.service \
+    /usr/lib/systemd/system/psc-camera-calibration.service
+systemctl enable psc-camera-calibration.service
+
+# Retry the onboard BCM43430 with alternate packaged firmware on Pi 3 only.
+install -o root -g root -m 755 /tmp/packer/network/psc-pi3-wifi-recovery.sh \
+    /usr/local/sbin/psc-pi3-wifi-recovery.sh
+install -o root -g root -m 644 /tmp/packer/network/psc-pi3-wifi-recovery.service \
+    /usr/lib/systemd/system/psc-pi3-wifi-recovery.service
+systemctl enable psc-pi3-wifi-recovery.service
 
 # astoria systemd tasks
 mv /tmp/packer/astoria/astoria/* /usr/lib/systemd/system/

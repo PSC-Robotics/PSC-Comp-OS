@@ -1,3 +1,13 @@
+# PSC Robotics compatibility config.
+# This file is retained so software expecting the Astoria layout can still find a
+# local MQTT broker, but the image intentionally does not depend on the Student
+# Robotics kit metadata service, USB-code mount workflow, or hotspot network.
+#
+# Custom GPIO hat wiring for the PSC robot:
+# - Start button: BCM 29
+# - RGB LED: BCM 11 (blue), BCM 13 (green), BCM 15 (red)
+# - Buzzer: BCM 33
+
 [mqtt]
 host = "::1"
 port = 1883
@@ -24,11 +34,10 @@ default_usercode_entrypoint = "robot.py"
 cache_dir = "/var/srobo/cache"
 initial_log_lines = [
     "%SROBO_VERSION%",
-    "Is there something you'd like us to add to the kit or API? 💡",
-    "Perhaps there's something you think we should improve? 🛠️",
-    "Let us know your feedback about your experience using our kit at https://studentrobotics.org/kit-feedback 🗣️"
+    "PSC Robotics Competition OS",
 ]
 
 [env]
-OPENCV_VIDEOIO_PRIORITY_GSTREAMER=0
+OPENCV_VIDEOIO_PRIORITY_GSTREAMER = "0"
+OPENCV_CALIBRATIONS = "/var/lib/psc-robotics/calibrations"
 
