@@ -18,6 +18,9 @@ from .utils import (
 
 logger = logging.getLogger(__name__)
 BAUDRATE = 115200
+MAX_STEPPER_COMMAND_US = 350_000
+MAX_STEPPER_DELAY_US = 10_000
+STEPPER_PIN_COMMAND = 's'
 if IN_SIMULATOR:
     # Place each command on a new line in the simulator to simplify the implementation
     ENDLINE = '\n'
@@ -310,6 +313,70 @@ class Arduino(Board):
 
         response = self._serial.query(f'u{pulse_id}{echo_id}', endl=ENDLINE)
         return int(response)
+
+    @log_to_debug
+    def stepper_move(
+        self,
+        step_pin: int,
+        direction_pin: int,
+        steps: int,
+        *,
+        direction: bool = True,
+        step_delay_us: int = 1000,
+    ) -> None:
+        """Move a step/direction driver by a finite number of steps.
+
+        The Arduino generates one 2 microsecond STEP pulse per step and holds
+        the STEP line low for ``step_delay_us`` between pulses. This is a
+        blocking operation; the maximum pulse train is bounded to fit within
+        the serial command timeout. Acceleration and position tracking are not
+        provided.
+
+        :param step_pin: Arduino pin connected to the driver's STEP input.
+        :param direction_pin: Arduino pin connected to the driver's DIR input.
+        :param steps: Number of rising STEP edges to generate (1 to 99999).
+        :param direction: True drives DIR high; False drives DIR low.
+        :param step_delay_us: Low time between STEP pulses in microseconds.
+        :raises ValueError: If pins, step count, direction, or timing are invalid.
+        :raises RuntimeError: If the attached firmware does not support this command.
+        """
+        if not isinstance(steps, int) or isinstance(steps, bool) or not 1 <= steps <= 99999:
+            raise ValueError("steps must be an integer from 1 to 99999")
+        if not isinstance(direction, bool):
+            raise ValueError("direction must be a bool")
+        if (
+            not isinstance(step_delay_us, int)
+            or isinstance(step_delay_us, bool)
+            or not 2 <= step_delay_us <= MAX_STEPPER_DELAY_US
+        ):
+            raise ValueError(
+                f"step_delay_us must be an integer from 2 to {MAX_STEPPER_DELAY_US}"
+            )
+        if steps * (step_delay_us + 100) > MAX_STEPPER_COMMAND_US:
+            raise ValueError(
+                "stepper move is too long for one serial command; use smaller moves"
+            )
+        if step_pin == direction_pin:
+            raise ValueError("step_pin and direction_pin must be different")
+
+        try:
+            step_pin_id = self.map_pin_number(step_pin)
+        except (TypeError, ValueError):
+            raise ValueError("Invalid step pin provided") from None
+        try:
+            direction_pin_id = self.map_pin_number(direction_pin)
+        except (TypeError, ValueError):
+            raise ValueError("Invalid direction pin provided") from None
+
+        command = (
+            f"{STEPPER_PIN_COMMAND}{step_pin_id}{direction_pin_id}"
+            f"{int(direction)}{steps:05d}{step_delay_us:05d}"
+        )
+        response = self._serial.query(command, endl=ENDLINE)
+        if response != "OK":
+            raise RuntimeError(
+                "Arduino firmware does not support stepper_move; update its firmware"
+            )
 
     def __repr__(self) -> str:
         return f"<{self.__class__.__qualname__}: {self._serial}>"

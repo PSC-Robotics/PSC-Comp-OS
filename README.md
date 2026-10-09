@@ -28,8 +28,8 @@ pip install sr-robot3[vision]
 ## Usage
 
 The main entry point for the API is the `Robot` class.
-Intantiating this class will automatically detect and connect to any SR v4 boards connected to the device.
-By default, the `Robot` class will wait for the start button on the power board to be pressed before continuing.
+Instantiating this class will automatically detect and connect to any supported SR v4 boards connected to the device.
+All SR boards are optional; connected boards are initialized and exposed as usual. By default, the `Robot` class waits for a start signal before continuing. When a power board is present, its start button is used; without one, the start signal can come from Astoria.
 
 ```python
 
@@ -53,6 +53,33 @@ r = Robot(wait_for_start=False)
 r.wait_start()
 
 ```
+
+An Arduino running firmware version 4 or later can drive a step/direction
+stepper driver with `arduino.stepper_move(step_pin, direction_pin, steps)`. The
+call blocks until the requested pulses are emitted; pass `direction=False` to
+drive DIR low, and use `step_delay_us` to set the low interval between pulses.
+Moves are limited to 350 ms per command so they fit within the serial timeout.
+This API does not provide acceleration or track motor position.
+
+### Camera calibrations
+
+The bundled Logitech calibrations are used automatically and are read-only in
+the camera setup UI. Custom calibration directories can be added to the code
+USB root with either `camera-calibrations.toml`:
+
+```toml
+calibrations = ["camera-calibrations"]
+```
+
+or `camera-calibrations.json`:
+
+```json
+{"calibrations": ["camera-calibrations"]}
+```
+
+Place the AprilVision calibration XML files in the listed directory. Paths are
+relative to the manifest and must remain on the code USB. Only cameras matching
+a loaded calibration are added to `Robot.cameras`.
 
 ## Developer Notes
 

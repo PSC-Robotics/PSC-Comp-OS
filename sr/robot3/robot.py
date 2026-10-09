@@ -46,7 +46,8 @@ class Robot(metaclass=FinalMeta):
     :param manual_boards: A dictionary of board types to a list of serial port paths
         to allow for connecting to boards that are not automatically detected, defaults to None
     :param raw_ports: A list of serial number, baudrate tuples to try connecting to.
-    :param no_powerboard: If True, initialize the robot without a powerboard, defaults to False
+    :param no_powerboard: If True, skip powerboard discovery. If False, use a powerboard
+        when present and continue without one when absent.
     """
     __slots__ = (
         '_lock', '_metadata', '_power_board', '_motor_boards', '_servo_boards',
@@ -114,6 +115,11 @@ class Robot(metaclass=FinalMeta):
             return
 
         power_boards = PowerBoard._get_supported_boards(manual_boards, sleep_fn=self.sleep)
+        if not power_boards:
+            self._no_powerboard = True
+            logger.info("No power board found; continuing without one.")
+            return
+
         self._power_board = singular(power_boards)
 
         # Enable all the outputs, so that we can find other boards.

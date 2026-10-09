@@ -124,6 +124,31 @@ def test_robot(monkeypatch, caplog) -> None:
     assert signal.getsignal(signal.SIGTERM) != signal.SIG_DFL
 
 
+def test_robot_without_sr_boards(monkeypatch) -> None:
+    """The robot API can start when no SR hardware is connected."""
+    monkeypatch.setattr('sr.robot3.robot.obtain_lock', lambda: socket.socket())
+    monkeypatch.setattr(
+        'sr.robot3.power_board.PowerBoard._get_supported_boards',
+        lambda *args, **kwargs: {},
+    )
+    monkeypatch.setattr('sr.robot3.motor_board.comports', lambda: [])
+    monkeypatch.setattr('sr.robot3.servo_board.comports', lambda: [])
+    monkeypatch.setattr('sr.robot3.arduino.comports', lambda: [])
+    monkeypatch.setattr('sr.robot3.robot.init_astoria_mqtt', lambda: (None, None))
+    monkeypatch.setattr('sr.robot3.robot.KCH', lambda: object())
+    monkeypatch.setattr(Robot, '_init_camera', lambda self: setattr(self, '_cameras', {}))
+
+    robot = Robot(wait_for_start=False)
+    try:
+        assert robot.motor_boards == {}
+        assert robot.servo_boards == {}
+        assert robot.arduinos == {}
+        with pytest.raises(RuntimeError, match="No power board was initialized"):
+            _ = robot.power_board
+    finally:
+        robot._lock.close()
+
+
 @pytest.hookimpl(trylast=True)
 @pytest.mark.hardware
 def test_robot_discovery() -> None:

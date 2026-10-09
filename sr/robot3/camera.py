@@ -1,9 +1,15 @@
 """An implementation of a camera board using the april_vision library."""
 from __future__ import annotations
 
+import json
 import logging
 from pathlib import Path
 from typing import Callable, Dict, Iterable, List, Optional, Union
+
+try:
+    import tomllib
+except ImportError:
+    import tomli as tomllib
 
 from april_vision import CalibratedCamera, Frame, FrameSource
 from april_vision import Marker as AprilMarker
@@ -25,6 +31,64 @@ LOGGER = logging.getLogger(__name__)
 robot_calibrations = calibrations.copy()
 # Include calibrations from the package after calibrations from the user's directory
 robot_calibrations.insert(1, str(Path(__file__).parent.resolve() / 'calibrations'))
+
+
+def _manifest_calibration_locations(root: Path) -> list[str]:
+    """Read calibration directories listed by the code USB manifest."""
+    for manifest_name in ('camera-calibrations.toml', 'camera-calibrations.json'):
+        manifest_path = root / manifest_name
+        if not manifest_path.is_file():
+            continue
+
+        try:
+            if manifest_path.suffix == '.json':
+                manifest = json.loads(manifest_path.read_text())
+            else:
+                manifest = tomllib.loads(manifest_path.read_text())
+            if not isinstance(manifest, dict):
+                raise ValueError("manifest root must be an object")
+            entries = manifest.get('calibrations', [])
+            valid_entries = isinstance(entries, list) and all(
+                isinstance(entry, str) for entry in entries
+            )
+            if not valid_entries:
+                raise ValueError("'calibrations' must be a list of directory paths")
+
+            root_path = root.resolve()
+            locations = []
+            for entry in entries:
+                location = (root_path / entry).resolve()
+                if root_path not in location.parents or not location.is_dir():
+                    raise ValueError(f"Invalid calibration directory: {entry}")
+                locations.append(str(location))
+            return locations
+        except (OSError, json.JSONDecodeError, tomllib.TOMLDecodeError, ValueError) as error:
+            LOGGER.warning(
+                "Ignoring invalid camera calibration manifest %s: %s",
+                manifest_path,
+                error,
+            )
+            return []
+    return []
+
+
+def _camera_calibration_locations() -> list[str]:
+    locations = list(robot_calibrations)
+    if not IN_SIMULATOR:
+        locations.extend(_manifest_calibration_locations(Path.cwd()))
+    return list(dict.fromkeys(locations))
+
+
+def discover_camera_candidates() -> list[CalibratedCamera]:
+    """Return working USB cameras, including cameras without calibration data.
+
+    This is intended for setup tools and web interfaces. Robot startup continues
+    to use only calibrated cameras through :meth:`AprilCamera._discover`.
+    """
+    if IN_SIMULATOR:
+        return []
+
+    return find_cameras(_camera_calibration_locations(), include_uncalibrated=True)
 
 
 class AprilCamera(Board):
@@ -57,9 +121,8 @@ class AprilCamera(Board):
         """
         Discover the connected cameras that have calibration data available.
 
-        The calibration data from the april_vision library is included when searching.
-        To add additional calibration data, add the paths to the environment variable
-        `OPENCV_CALIBRATIONS`, separated by a colon.
+        The calibration data from april_vision, this package, the code USB
+        manifest, and `OPENCV_CALIBRATIONS` is included when searching.
 
         :return: A dict of cameras, keyed by their name and index.
         """
@@ -72,7 +135,8 @@ class AprilCamera(Board):
         return {
             (serial := f"{camera_data.name} - {camera_data.index}"):
             cls.from_id(camera_data.index, camera_data=camera_data, serial_num=serial)
-            for camera_data in find_cameras(robot_calibrations)
+            for camera_data in discover_camera_candidates()
+            if camera_data.calibration is not None
         }
 
     def __init__(

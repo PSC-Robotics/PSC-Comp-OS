@@ -77,6 +77,49 @@ def test_arduino_custom_command(arduino_serial: MockArduino) -> None:
     assert arduino.command(f"test:{pin_str}") == "ACK123"
 
 
+def test_arduino_stepper_move(arduino_serial: MockArduino) -> None:
+    arduino = arduino_serial.arduino_board
+    arduino_serial.serial_wrapper._add_responses([
+        ("sef10001201000", "OK"),
+        ("sfg00000300002", "OK"),
+    ])
+
+    arduino.stepper_move(4, 5, 12, step_delay_us=1000)
+    arduino.stepper_move(5, 6, 3, direction=False, step_delay_us=2)
+
+
+@pytest.mark.parametrize(
+    ("arguments", "keyword_arguments", "message"),
+    [
+        ((0, 5, 1), {}, "Invalid step pin"),
+        ((4, 4, 1), {}, "must be different"),
+        ((4, 5, 0), {}, "steps must be"),
+        ((4, 5, 4000), {}, "too long"),
+        ((4, 5, 1), {"step_delay_us": 10001}, "step_delay_us must be"),
+    ],
+)
+def test_arduino_stepper_move_validates_arguments(
+    arduino_serial: MockArduino,
+    arguments: tuple[int, int, int],
+    keyword_arguments: dict[str, object],
+    message: str,
+) -> None:
+    with pytest.raises(ValueError, match=message):
+        arduino_serial.arduino_board.stepper_move(*arguments, **keyword_arguments)
+
+
+def test_arduino_stepper_move_requires_updated_firmware(
+    arduino_serial: MockArduino,
+) -> None:
+    arduino = arduino_serial.arduino_board
+    arduino_serial.serial_wrapper._add_responses([
+        ("sef10000101000", ""),
+    ])
+
+    with pytest.raises(RuntimeError, match="update its firmware"):
+        arduino.stepper_move(4, 5, 1, step_delay_us=1000)
+
+
 def test_arduino_pins(arduino_serial: MockArduino) -> None:
     """
     Test the arduino pins properties and methods.
