@@ -1,0 +1,22 @@
+# PSC Robotics status LED, buzzer and start button (BCM GPIO numbers, not header pins).
+# After changing pins, also update the gpio= lines in /boot/config.txt that
+# light the LED blue from power-on and keep the buzzer silent while booting.
+
+[led]
+red = 22     # header pin 15
+green = 27   # header pin 13
+blue = 17    # header pin 11
+# true for a common-cathode LED (shared leg to GND), false for common-anode.
+active_high = true
+
+[start_button]
+pin = 5      # header pin 29; wire the button between this pin and GND
+pull = "up"  # internal pull-up, so a press pulls the pin low
+
+[buzzer]
+pin = 13          # header pin 33
+type = "passive"  # "passive" plays notes; "active" beeps at its own fixed pitch
+
+[mqtt]
+host = "localhost"
+port = 1883

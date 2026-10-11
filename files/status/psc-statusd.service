@@ -1,0 +1,13 @@
+[Unit]
+Description=PSC Robotics status LED and start button
+After=mosquitto.service
+Wants=mosquitto.service
+
+[Service]
+Type=simple
+ExecStart=/home/robot/.pyenv/versions/3.11.5/bin/python /usr/local/lib/psc-statusd.py
+Restart=always
+RestartSec=2
+
+[Install]
+WantedBy=multi-user.target

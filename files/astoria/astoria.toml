@@ -3,10 +3,11 @@
 # local MQTT broker, but the image intentionally does not depend on the Student
 # Robotics kit metadata service, USB-code mount workflow, or hotspot network.
 #
-# Custom GPIO hat wiring for the PSC robot:
-# - Start button: BCM 29
-# - RGB LED: BCM 11 (blue), BCM 13 (green), BCM 15 (red)
-# - Buzzer: BCM 33
+# Custom GPIO hat wiring for the PSC robot (BCM numbers, header pins in brackets):
+# - Start button: BCM 5 (pin 29), wired to GND
+# - RGB status LED: BCM 17 blue (pin 11), BCM 27 green (pin 13), BCM 22 red (pin 15)
+# - Buzzer: pin 33 (unconfirmed; BCM 13 if that is the header pin)
+# The status LED and start button are run by psc-statusd; see /etc/psc-status.toml.
 
 [mqtt]
 host = "::1"
@@ -38,6 +39,8 @@ initial_log_lines = [
 ]
 
 [env]
+# No Student Robotics KCH hat: stop robot code driving its pins (used by the status LED).
+SR_KCH_HAT = "0"
 OPENCV_VIDEOIO_PRIORITY_GSTREAMER = "0"
 OPENCV_CALIBRATIONS = "/var/lib/psc-robotics/calibrations"
 
