@@ -45,6 +45,12 @@ The dialog guides you through four steps:
 4. **Save.** Calibrations with an average error above 2 px are rejected and not
 	saved; the worst views are highlighted so they can be removed and replaced.
 
+Saved calibrations are also written to any robot code USB drive that is
+plugged in, in `camera-calibrations/`, with a `camera-calibrations.toml`
+manifest. Every few seconds the calibration service checks plugged-in USB
+drives for calibrations matching the connected cameras, and imports any the
+robot doesn't have (a replaced calibration is kept in `replaced/`).
+
 Calibrations are saved in `/var/lib/psc-robotics/calibrations`, one per camera
 model (USB ID), so identical cameras share one. Robot programs find them through
 `OPENCV_CALIBRATIONS` and use them the next time they start. Saved calibrations
@@ -89,13 +95,18 @@ buzzer type are set in `/etc/psc-status.toml`:
 
 | Sound | Meaning |
 | --- | --- |
-| One beep | Robot code is waiting for the start button |
-| One higher beep | Start was pressed |
+| One beep (A6, as SR uses) | Robot code is waiting for the start button |
+| Three rising notes | Start was pressed |
 | Fast short beeps | Robot code crashed |
+
+The sounds (frequency, length and volume of each note) and the default volume
+for robot code are set under `[buzzer]` in `/etc/psc-status.toml`; restart
+`psc-statusd` after editing. Volume is the PWM duty cycle, 0 to 50.
 
 Robot code plays tones with `robot.buzzer.buzz()`, which asks `psc-statusd` to
 play them over MQTT (`psc/buzzer`), so only one process drives the buzzer pin.
-A tone left playing is stopped when the code finishes or is killed.
+The buzzer is silenced whenever robot code is not running, so a tone left
+playing stops when the code finishes, crashes or is killed.
 
 The LED is common-cathode (`active_high = true`). Wire the start button between
 GPIO 5 and GND; the internal pull-up is enabled. Never connect a GPIO pin to
