@@ -19,3 +19,4 @@ chmod +x /tmp/packer/python/install-pyenv.sh /tmp/packer/python/install-packages
 chown -R "$user:$user" /tmp/psc-sr-robot3
 su - $user -c /tmp/packer/python/install-pyenv.sh
 su - $user -c /tmp/packer/python/install-packages.sh
+rm -rf /tmp/psc-sr-robot3
