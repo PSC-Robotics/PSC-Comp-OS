@@ -38,6 +38,19 @@ def test_buzz_rejects_out_of_range(frequency, duration) -> None:
         Buzzer(FakeMQTT(), lambda _: None).buzz(frequency, duration)
 
 
+def test_buzz_volume() -> None:
+    mqtt = FakeMQTT()
+    buzzer = Buzzer(mqtt, lambda _: None)
+
+    buzzer.buzz(440, 0.5, volume=10)
+
+    assert mqtt.published == [
+        (BUZZER_TOPIC, {"frequency": 440, "duration": 0.5, "volume": 10.0}, True),
+    ]
+    with pytest.raises(ValueError, match="Volume"):
+        buzzer.buzz(440, 0.5, volume=51)
+
+
 def test_buzz_without_status_service_does_not_fail() -> None:
     Buzzer(None, lambda _: None).buzz(440, 0.1)
 

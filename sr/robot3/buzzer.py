@@ -35,7 +35,14 @@ class Buzzer:
         self._mqtt = mqtt_client
         self._sleep_fn = sleep_fn
 
-    def buzz(self, frequency: float, duration: float, *, blocking: bool = False) -> None:
+    def buzz(
+        self,
+        frequency: float,
+        duration: float,
+        *,
+        blocking: bool = False,
+        volume: Optional[float] = None,
+    ) -> None:
         """
         Produce a tone on the buzzer.
 
@@ -45,19 +52,25 @@ class Buzzer:
         :param frequency: The frequency of the tone, in Hz. A `Note` can be used.
         :param duration: The duration of the tone, in seconds.
         :param blocking: Whether to block until the tone has finished playing.
-        :raises ValueError: If the frequency or duration is out of range.
+        :param volume: The volume, from 0 (silent) to 50 (loudest). Defaults to
+            the robot's code volume setting.
+        :raises ValueError: If the frequency, duration or volume is out of range.
         """
         frequency_int = int(float_bounds_check(
             frequency, 8, 10_000, "Frequency must be between 8 and 10000Hz"))
         duration_s = float_bounds_check(
             duration, 0, 60, "Duration is a float in seconds between 0 and 60")
+        request: dict[str, float] = {"frequency": frequency_int, "duration": duration_s}
+        if volume is not None:
+            request["volume"] = float_bounds_check(
+                volume, 0, 50, "Volume must be between 0 and 50")
 
         if self._mqtt is None:
             LOGGER.warning("The buzzer is not available, so the tone was not played")
         else:
             self._mqtt.publish(
                 BUZZER_TOPIC,
-                json.dumps({"frequency": frequency_int, "duration": duration_s}),
+                json.dumps(request),
                 abs_topic=True,
             )
 
