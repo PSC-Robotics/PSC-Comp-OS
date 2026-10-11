@@ -5,7 +5,7 @@ import json
 import logging
 import time
 from threading import Lock
-from typing import Any, Callable, Optional, TypedDict, Union
+from typing import Any, Callable, Mapping, Optional, TypedDict, Union
 from urllib.parse import urlparse
 
 import paho.mqtt.client as mqtt
@@ -144,12 +144,18 @@ class MQTTClient:
         retain: bool = False,
         *,
         abs_topic: bool = True,
+        extra: Optional[Mapping[str, Any]] = None,
     ) -> None:
-        """Wrap a payload up to be decodable as JSON."""
+        """
+        Wrap a payload up to be decodable as JSON.
+
+        :param extra: Additional fields to include alongside the timestamp and data.
+        """
         if isinstance(payload, bytes):
             payload = payload.decode('utf-8')
 
         payload_dict = {
+            **(extra or {}),
             "timestamp": time.time(),
             "data": payload,
         }

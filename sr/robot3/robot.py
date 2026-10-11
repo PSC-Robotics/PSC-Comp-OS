@@ -14,12 +14,14 @@ from . import game_specific, timeout
 from ._version import __version__
 from .arduino import Arduino
 from .astoria import Metadata, RobotMode, init_astoria_mqtt
+from .buzzer import Buzzer
 from .camera import AprilCamera, _setup_cameras
 from .exceptions import MetadataNotReadyError
 from .kch import KCH
 from .logging import log_to_debug, setup_logging
 from .motor_board import MotorBoard
 from .power_board import Note, PowerBoard
+from .raspberry_pi import RaspberryPi
 from .raw_serial import RawSerial
 from .servo_board import ServoBoard
 from .simulator.time_server import TimeServer
@@ -52,7 +54,7 @@ class Robot(metaclass=FinalMeta):
     __slots__ = (
         '_lock', '_metadata', '_power_board', '_motor_boards', '_servo_boards',
         '_arduinos', '_cameras', '_mqtt', '_astoria', '_kch', '_raw_ports',
-        '_time_server', '_no_powerboard',
+        '_time_server', '_no_powerboard', '_buzzer', '_raspberry_pi',
     )
 
     def __init__(
@@ -152,6 +154,8 @@ class Robot(metaclass=FinalMeta):
         manual_arduinos = manual_boards.get(Arduino.get_board_type(), [])
 
         self._kch = KCH()
+        self._buzzer = Buzzer(self._mqtt, self.sleep)
+        self._raspberry_pi = RaspberryPi()
         self._motor_boards = MotorBoard._get_supported_boards(manual_motorboards)
         self._servo_boards = ServoBoard._get_supported_boards(manual_servoboards)
         self._arduinos = Arduino._get_supported_boards(manual_arduinos, ignored_arduinos)
@@ -203,6 +207,24 @@ class Robot(metaclass=FinalMeta):
                 f"Firmware Version of {identity.asset_tag}: {identity.sw_version}, "
                 f"reported type: {identity.board_type}",
             )
+
+    @property
+    def buzzer(self) -> Buzzer:
+        """
+        Access the buzzer connected to the brain board.
+
+        :returns: The Buzzer object
+        """
+        return self._buzzer
+
+    @property
+    def raspberry_pi(self) -> RaspberryPi:
+        """
+        Access devices wired directly to the Raspberry Pi's GPIO header.
+
+        :returns: The RaspberryPi object
+        """
+        return self._raspberry_pi
 
     @property
     def kch(self) -> KCH:
@@ -300,12 +322,31 @@ class Robot(metaclass=FinalMeta):
         Access the camera connected to the robot.
 
         This can only be used if there is exactly one camera connected.
-        The robot class currently only supports one camera.
+        Use :attr:`cameras` when more than one camera is connected.
 
         :return: The camera object
         :raises RuntimeError: If there is not exactly one camera connected
         """
+        if len(self._cameras) > 1:
+            names = ', '.join(repr(camera_id) for camera_id in self._cameras)
+            raise RuntimeError(
+                f"{len(self._cameras)} cameras are connected, so use "
+                f"robot.cameras[...] with one of: {names}"
+            )
         return singular(self._cameras)
+
+    @property
+    def cameras(self) -> Mapping[str, AprilCamera]:
+        """
+        Access the calibrated cameras connected to the robot.
+
+        Cameras are keyed by their USB serial number. Cameras without a unique
+        serial number are keyed by the USB port they are plugged into, such as
+        ``usb-1-1.2``, so keep them in the same port to keep the same name.
+
+        :return: A mapping of camera IDs to cameras
+        """
+        return self._cameras
 
     @property
     def raw_serial_devices(self) -> Mapping[str, RawSerial]:
@@ -452,6 +493,7 @@ class Robot(metaclass=FinalMeta):
             self.power_board.piezo.buzz(Note.A6, 0.1)
             self.power_board._run_led.flash()
         self.kch._flash_start()
+        self._publish_state('waiting_start')
 
         while not (start_button_pressed() or remote_start_pressed()):
             self.sleep(0.1)
@@ -459,6 +501,7 @@ class Robot(metaclass=FinalMeta):
         if not self._no_powerboard:
             self.power_board._run_led.on()
         self.kch._start = False
+        self._publish_state('started')
 
         if IN_SIMULATOR:
             self._metadata = Metadata.parse_file(
@@ -472,3 +515,13 @@ class Robot(metaclass=FinalMeta):
         # Simulator timeout is handled by the simulator supervisor
         if self._metadata.game_timeout and not IN_SIMULATOR:
             timeout.kill_after_delay(self._metadata.game_timeout)
+
+    def _publish_state(self, state: str) -> None:
+        """
+        Announce the robot's start state, e.g. for a status LED service.
+
+        Published to ``psc/robot/state`` as ``{"timestamp": ..., "data": state}``,
+        where state is ``waiting_start`` or ``started``.
+        """
+        if self._mqtt is not None:
+            self._mqtt.wrapped_publish('psc/robot/state', state)

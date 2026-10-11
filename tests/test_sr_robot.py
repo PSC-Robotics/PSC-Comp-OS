@@ -2,10 +2,12 @@
 import logging
 import signal
 import socket
+from types import MappingProxyType
 
 import pytest
 
 from sr.robot3 import Robot
+from sr.robot3.astoria import Metadata
 from sr.robot3.exceptions import MetadataNotReadyError
 from sr.robot3.utils import BoardIdentity, obtain_lock
 
@@ -101,6 +103,7 @@ def test_robot(monkeypatch, caplog) -> None:
     # Check that a RuntimeError is raised if we have 0 instances of a board
     with pytest.raises(RuntimeError, match="No boards of this type found"):
         r.camera.identify()
+    assert dict(r.cameras) == {}
 
     # Check that we can't obtain a lock when a robot object already exists
     with pytest.raises(
@@ -149,6 +152,85 @@ def test_robot_without_sr_boards(monkeypatch) -> None:
         robot._lock.close()
 
 
+def test_robot_with_multiple_cameras(monkeypatch) -> None:
+    """Several cameras are reachable through robot.cameras, not robot.camera."""
+    monkeypatch.setattr('sr.robot3.robot.obtain_lock', lambda: socket.socket())
+    monkeypatch.setattr(
+        'sr.robot3.power_board.PowerBoard._get_supported_boards',
+        lambda *args, **kwargs: {},
+    )
+    monkeypatch.setattr('sr.robot3.motor_board.comports', lambda: [])
+    monkeypatch.setattr('sr.robot3.servo_board.comports', lambda: [])
+    monkeypatch.setattr('sr.robot3.arduino.comports', lambda: [])
+    monkeypatch.setattr('sr.robot3.robot.init_astoria_mqtt', lambda: (None, None))
+    monkeypatch.setattr('sr.robot3.robot.KCH', lambda: object())
+    cameras = {"A1B2C3D4": object(), "usb-1-1.2": object()}
+    monkeypatch.setattr(
+        Robot, '_init_camera',
+        lambda self: setattr(self, '_cameras', MappingProxyType(cameras)),
+    )
+    monkeypatch.setattr(Robot, '_log_connected_boards', lambda self: None)
+
+    robot = Robot(wait_for_start=False)
+    try:
+        assert dict(robot.cameras) == cameras
+        with pytest.raises(TypeError):
+            robot.cameras["extra"] = object()  # type: ignore[index]
+        with pytest.raises(RuntimeError, match=r"robot\.cameras.*'A1B2C3D4', 'usb-1-1.2'"):
+            _ = robot.camera
+    finally:
+        robot._lock.close()
+
+
+def test_wait_start_announces_state(monkeypatch) -> None:
+    """A status LED service can tell when code is waiting for the start button."""
+    published = []
+
+    class FakeMQTT:
+        def wrapped_publish(self, topic, payload, retain=False, **kwargs):
+            published.append((topic, payload))
+
+    class FakeAstoria:
+        presses = iter([False, False, True])
+
+        def get_start_button_pressed(self):
+            return next(self.presses)
+
+        def fetch_current_metadata(self):
+            return Metadata()
+
+    monkeypatch.setattr('sr.robot3.robot.obtain_lock', lambda: socket.socket())
+    monkeypatch.setattr(
+        'sr.robot3.power_board.PowerBoard._get_supported_boards',
+        lambda *args, **kwargs: {},
+    )
+    monkeypatch.setattr('sr.robot3.motor_board.comports', lambda: [])
+    monkeypatch.setattr('sr.robot3.servo_board.comports', lambda: [])
+    monkeypatch.setattr('sr.robot3.arduino.comports', lambda: [])
+    monkeypatch.setattr(
+        'sr.robot3.robot.init_astoria_mqtt', lambda: (FakeMQTT(), FakeAstoria()),
+    )
+    monkeypatch.setattr('sr.robot3.robot.KCH', MockKCH)
+    monkeypatch.setattr(Robot, '_init_camera', lambda self: setattr(self, '_cameras', {}))
+    monkeypatch.setattr(Robot, 'sleep', lambda self, secs: None)
+
+    robot = Robot(wait_for_start=False)
+    try:
+        robot.wait_start()
+    finally:
+        robot._lock.close()
+
+    states = [payload for topic, payload in published if topic == 'psc/robot/state']
+    assert states == ['waiting_start', 'started']
+
+
+class MockKCH:
+    def _flash_start(self) -> None:
+        pass
+
+    _start = False
+
+
 @pytest.hookimpl(trylast=True)
 @pytest.mark.hardware
 def test_robot_discovery() -> None:
@@ -170,3 +252,28 @@ def test_cannot_subclass() -> None:
     with pytest.raises(TypeError, match="Robot cannot be sub-classed"):
         class MyRobot(Robot):
             pass
+
+
+@pytest.mark.parametrize(("env", "expected"), [("0", False), ("1", True), (None, True)])
+def test_kch_hat_opt_out(env, expected, monkeypatch) -> None:
+    """SR_KCH_HAT=0 stops the API driving the KCH hat's GPIO pins."""
+    import importlib
+    import sys
+    import types
+
+    import sr.robot3.kch as kch
+
+    fake_gpio = types.ModuleType('RPi.GPIO')
+    fake_rpi = types.ModuleType('RPi')
+    fake_rpi.GPIO = fake_gpio  # type: ignore[attr-defined]
+    monkeypatch.setitem(sys.modules, 'RPi', fake_rpi)
+    monkeypatch.setitem(sys.modules, 'RPi.GPIO', fake_gpio)
+    if env is None:
+        monkeypatch.delenv('SR_KCH_HAT', raising=False)
+    else:
+        monkeypatch.setenv('SR_KCH_HAT', env)
+    try:
+        assert importlib.reload(kch).HAS_HAT is expected
+    finally:
+        monkeypatch.undo()
+        importlib.reload(kch)

@@ -61,10 +61,51 @@ drive DIR low, and use `step_delay_us` to set the low interval between pulses.
 Moves are limited to 350 ms per command so they fit within the serial timeout.
 This API does not provide acceleration or track motor position.
 
+### Buzzer
+
+`robot.buzzer.buzz(frequency, duration, blocking=False)` plays a tone on the
+buzzer connected to the brain board, like the Student Robotics power board's
+`piezo.buzz()`. `Note` values such as `Note.A6` can be used for the frequency.
+A new tone replaces the one playing. Tones are played by the robot's status
+service, which also beeps when code is waiting for the start button, when start
+is pressed, and with fast short beeps when code crashes.
+
+### Steppers on the Raspberry Pi GPIO
+
+`robot.raspberry_pi.stepper_move(step_pin, direction_pin, steps)` drives a
+step/direction stepper driver wired to the Pi's GPIO header, using BCM GPIO
+numbers. It takes the same arguments as `arduino.stepper_move`, but has no
+350 ms limit: `steps` can be up to 1000000 and `step_delay_us` from 50 to
+1000000. Timing is done in software, so step timing can vary slightly. GPIO 5,
+13, 17, 22 and 27 are used by the robot and can't be used.
+
+### Multiple cameras
+
+Every connected camera with a calibration is available in `robot.cameras`.
+`robot.camera` still works when exactly one camera is connected.
+
+```python
+from sr.robot3 import Robot
+
+r = Robot()
+
+for camera_id, camera in r.cameras.items():
+    print(camera_id, camera.see())
+
+front = r.cameras["A1B2C3D4"]
+```
+
+Cameras are keyed by their USB serial number. Cameras with no serial number,
+a generic placeholder serial or a serial shared with another connected camera
+are keyed by the USB port they are plugged into, such as `usb-1-1.2`. Keep
+those cameras in the same ports so their names stay the same. The camera
+calibration dialog in the robot web UI shows the name of each connected camera.
+Cameras of the same model share one calibration.
+
 ### Camera calibrations
 
 The bundled Logitech calibrations are used automatically and are read-only in
-the camera setup UI. Custom calibration directories can be added to the code
+the camera calibration dialog. Custom calibration directories can be added to the code
 USB root with either `camera-calibrations.toml`:
 
 ```toml

@@ -3,8 +3,12 @@ from __future__ import annotations
 
 import json
 import logging
+import re
+from collections import Counter
 from pathlib import Path
-from typing import Callable, Dict, Iterable, List, Optional, Union
+from typing import (
+    Any, Callable, Dict, Iterable, List, Optional, Sequence, Union,
+)
 
 try:
     import tomllib
@@ -91,6 +95,72 @@ def discover_camera_candidates() -> list[CalibratedCamera]:
     return find_cameras(_camera_calibration_locations(), include_uncalibrated=True)
 
 
+# Serials shared by many generic webcams, so they can't tell units apart.
+_PLACEHOLDER_SERIALS = {'200901010001', '0123456789', '123456789', '12345678', 'SN0001'}
+_UNSAFE_ID_CHARS = re.compile(r'[^A-Za-z0-9_.-]')
+_USB_PORT = re.compile(r'\d+-\d+(\.\d+)*')
+
+
+def _usable_serial(serial: Optional[str]) -> Optional[str]:
+    """Return the camera's USB serial if it looks unique to that unit."""
+    if serial is None:
+        return None
+    serial = serial.strip()
+    if (
+        len(serial) < 6
+        or len(set(serial.lower())) < 4
+        or serial.upper() in _PLACEHOLDER_SERIALS
+        or _UNSAFE_ID_CHARS.search(serial)
+    ):
+        return None
+    return serial
+
+
+def _usb_port(index: int) -> Optional[str]:
+    """Return the USB port path (e.g. '1-1.2') a V4L2 camera is plugged into."""
+    try:
+        device = Path(f'/sys/class/video4linux/video{index}/device').resolve(strict=True)
+    except (OSError, RuntimeError):
+        return None
+    # The device links to a USB interface such as '1-1.2:1.0'; its parent is the port.
+    for node in (device, *device.parents):
+        if _USB_PORT.fullmatch(node.name):
+            return node.name
+    return None
+
+
+def assign_camera_ids(cameras: Sequence[CalibratedCamera]) -> List[str]:
+    """
+    Give each connected camera a name that stays the same between boots.
+
+    A camera's USB serial number is used when it is present and unique among
+    the connected cameras. Otherwise the USB port it is plugged into is used,
+    as ``usb-<port>``, so it keeps its name while it stays in that port.
+    Cameras with neither fall back to ``<name> - <index>``.
+
+    :param cameras: Every connected camera, calibrated or not, so that names
+        don't change when a calibration is added.
+    :return: The camera IDs, in the same order as ``cameras``.
+    """
+    serials = [_usable_serial(getattr(camera, 'serial_num', None)) for camera in cameras]
+    serial_counts = Counter(serial for serial in serials if serial)
+
+    ids = []
+    for camera, serial in zip(cameras, serials):
+        if serial and serial_counts[serial] == 1:
+            ids.append(serial)
+        elif (port := _usb_port(camera.index)) is not None:
+            ids.append(f'usb-{port}')
+        else:
+            ids.append(f'{camera.name} - {camera.index}')
+
+    id_counts = Counter(ids)
+    return [
+        camera_id if id_counts[camera_id] == 1 else f'{camera_id} - {camera.index}'
+        for camera_id, camera in zip(ids, cameras)
+    ]
+
+
 class AprilCamera(Board):
     """
     Virtual Camera Board for detecting fiducial markers.
@@ -124,7 +194,7 @@ class AprilCamera(Board):
         The calibration data from april_vision, this package, the code USB
         manifest, and `OPENCV_CALIBRATIONS` is included when searching.
 
-        :return: A dict of cameras, keyed by their name and index.
+        :return: A dict of cameras, keyed by the IDs from :func:`assign_camera_ids`.
         """
         if IN_SIMULATOR:
             return {
@@ -132,10 +202,11 @@ class AprilCamera(Board):
                 for camera_info in get_simulator_boards('CameraBoard')
             }
 
+        candidates = discover_camera_candidates()
         return {
-            (serial := f"{camera_data.name} - {camera_data.index}"):
-            cls.from_id(camera_data.index, camera_data=camera_data, serial_num=serial)
-            for camera_data in discover_camera_candidates()
+            camera_id:
+            cls.from_id(camera_data.index, camera_data=camera_data, serial_num=camera_id)
+            for camera_id, camera_data in zip(assign_camera_ids(candidates), candidates)
             if camera_data.calibration is not None
         }
 
@@ -208,7 +279,7 @@ class AprilCamera(Board):
         """
         Get the identity of the camera.
 
-        The asset tag of the board is the camera name and index.
+        The asset tag of the board is the camera ID used in ``Robot.cameras``.
         The version is the version of the april_vision library.
 
         :return: The identity of the board.
@@ -297,30 +368,43 @@ class AprilCamera(Board):
 
 def _setup_cameras(
     tag_sizes: Dict[Iterable[int], int],
-    publish_func: Optional[Callable[[str, bytes], None]] = None,
+    publish_func: Optional[Callable[..., None]] = None,
 ) -> Dict[str, AprilCamera]:
     """
     Find all connected cameras with calibration and configure tag sizes.
 
     Optionally set a callback to send a base64 encode JPEG bytestream of each
-    image detection is run on.
+    image detection is run on. The callback is also passed
+    ``extra={'camera': <camera ID>}`` so that frames from different cameras
+    can be told apart.
 
     :param tag_sizes: The size of the tags to use for pose estimation given in millimeters
     :param publish_func: Optionally, a function to call with the base64 encoded JPEG bytestream
-    :return: A dict of cameras, keyed by their name and index.
+    :return: A dict of cameras, keyed by their camera ID.
     """
     # Unroll the tag ID iterables and convert the sizes to meters
     expanded_tag_sizes = generate_marker_size_mapping(tag_sizes)
 
-    if publish_func:
-        frame_sender = Base64Sender(publish_func)
-
     cameras = AprilCamera._discover()
 
-    for camera in cameras.values():
+    for camera_id, camera in cameras.items():
         # Set the tag sizes in the camera
         camera._set_marker_sizes(expanded_tag_sizes)
         if publish_func:
+            frame_sender = Base64Sender(_labelled_publisher(publish_func, camera_id))
             camera._set_detection_hook(frame_sender.annotated_frame_hook)
 
     return cameras
+
+
+def _labelled_publisher(
+    publish_func: Callable[..., None],
+    camera_id: str,
+) -> Callable[[str, bytes], None]:
+    """Wrap a publish function so each frame carries the ID of its camera."""
+    extra: Dict[str, Any] = {'camera': camera_id}
+
+    def publish(topic: str, payload: bytes) -> None:
+        publish_func(topic, payload, extra=extra)
+
+    return publish
