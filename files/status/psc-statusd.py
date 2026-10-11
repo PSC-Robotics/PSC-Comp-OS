@@ -12,13 +12,14 @@ through robot.buzzer.
     Code running       blue
     Code crashed       red
 
-Sounds:
+Sounds (defaults; each can be changed in /etc/psc-status.toml):
 
-    Waiting for start  one beep
-    Start pressed      one higher beep
+    Waiting for start  one beep (A6, as Student Robotics uses)
+    Start pressed      three rising notes
     Code crashed       fast short beeps
 
-Pins, LED polarity and buzzer type are set in /etc/psc-status.toml.
+Pins, LED polarity, buzzer type, volume and sounds are set in
+/etc/psc-status.toml.
 """
 from __future__ import annotations
 
@@ -56,11 +57,16 @@ WAITING_FOR_START = LedPattern(GREEN, flashing=True)
 RUNNING = LedPattern(BLUE)
 CRASHED = LedPattern(RED)
 
-# Sounds are lists of (frequency in Hz, seconds); a frequency of 0 is silence.
-Sound = list[tuple[float, float]]
-WAITING_SOUND: Sound = [(1760, 0.1)]
-START_SOUND: Sound = [(2349, 0.15)]
-CRASH_SOUND: Sound = [(2093, 0.06), (0, 0.06)] * 6
+# Sounds are lists of (frequency in Hz, seconds, volume); a frequency or volume of
+# 0 is silence. Volume is the PWM duty cycle in percent: 50 is a passive
+# buzzer's loudest.
+Sound = list[tuple[float, float, float]]
+DEFAULT_SOUNDS: dict[str, Sound] = {
+    "waiting": [(1760, 0.1, 15)],  # A6 for 0.1s, as SR's power board plays
+    "start": [(1047, 0.06, 8), (1319, 0.06, 8), (1568, 0.10, 8)],
+    "crash": [(2093, 0.06, 15), (0, 0.06, 0)] * 6,
+}
+DEFAULT_CODE_VOLUME = 50
 SILENCE: Sound = []
 
 
@@ -73,6 +79,7 @@ class RobotStatus:
         self.astprocd_running = False
         self.code_status: str | None = None
         self.waiting_for_start = False
+        self.sounds = dict(DEFAULT_SOUNDS)
 
     def handle(self, topic: str, payload: bytes) -> Sound | None:
         """Update the status from an MQTT message; return a sound to play, if any."""
@@ -92,17 +99,20 @@ class RobotStatus:
                     self.waiting_for_start = False
                 self.code_status = code_status
                 if changed and code_status == "code_crashed":
-                    return CRASH_SOUND
-                if changed and code_status in ("code_finished", "code_killed", None):
-                    return SILENCE  # stop any tone the code left playing
+                    return self.sounds["crash"]
+                if code_status not in ("code_starting", "code_running", "code_crashed"):
+                    # Finished, killed or no code: stop any tone the code left
+                    # playing. Done on every such message, not just on a change,
+                    # so a missed status change can't leave the buzzer on.
+                    return SILENCE
             elif topic == ROBOT_STATE_TOPIC:
                 state = message.get("data")
                 was_waiting = self.waiting_for_start
                 self.waiting_for_start = state == "waiting_start"
                 if self.waiting_for_start and not was_waiting:
-                    return WAITING_SOUND
+                    return self.sounds["waiting"]
                 if state == "started" and was_waiting:
-                    return START_SOUND
+                    return self.sounds["start"]
         return None
 
     def set_connected(self, connected: bool) -> None:
@@ -121,17 +131,18 @@ class RobotStatus:
             return READY
 
 
-def buzz_request(payload: bytes) -> Sound | None:
+def buzz_request(payload: bytes, volume: float = DEFAULT_CODE_VOLUME) -> Sound | None:
     """Turn a robot.buzzer.buzz() request into a sound, ignoring invalid ones."""
     try:
         message = json.loads(payload)
         frequency = float(message["frequency"])
         duration = float(message["duration"])
-    except (ValueError, TypeError, KeyError):
+        volume = float(message.get("volume", volume))
+    except (ValueError, TypeError, KeyError, AttributeError):
         return None
-    if not (8 <= frequency <= 10_000 and 0 <= duration <= 60):
+    if not (8 <= frequency <= 10_000 and 0 <= duration <= 60 and 0 <= volume <= 50):
         return None
-    return [(frequency, duration)]
+    return [(frequency, duration, volume)]
 
 
 class BuzzerPlayer:
@@ -168,13 +179,14 @@ class BuzzerPlayer:
     def _silence(self) -> None:
         if self._pwm is not None:
             self._pwm.ChangeDutyCycle(0)
-        else:
-            self._gpio.output(self._pin, self._gpio.LOW)
+        # At 0% duty the PWM never drives the pin high; drive it low too, so the
+        # buzzer is definitely off whatever state the pin was left in.
+        self._gpio.output(self._pin, self._gpio.LOW)
 
-    def _tone(self, frequency: float) -> None:
+    def _tone(self, frequency: float, volume: float) -> None:
         if self._pwm is not None:
             self._pwm.ChangeFrequency(frequency)
-            self._pwm.ChangeDutyCycle(50)
+            self._pwm.ChangeDutyCycle(volume)
         else:
             self._gpio.output(self._pin, self._gpio.HIGH)
 
@@ -182,9 +194,9 @@ class BuzzerPlayer:
         sound: Sound | None = self._requests.get()
         while sound is not None:
             replaced = False
-            for frequency, duration in sound:
-                if frequency > 0:
-                    self._tone(frequency)
+            for frequency, duration, volume in sound:
+                if frequency > 0 and volume > 0:
+                    self._tone(frequency, volume)
                 else:
                     self._silence()
                 try:
@@ -212,7 +224,36 @@ def load_config(path: Path = CONFIG_FILE) -> dict:
         raise ValueError("buzzer.pin must be a BCM pin number")
     if buzzer.get("type", "passive") not in ("passive", "active"):
         raise ValueError('buzzer.type must be "passive" or "active"')
+    volume = buzzer.setdefault("code_volume", DEFAULT_CODE_VOLUME)
+    if not isinstance(volume, (int, float)) or not 0 <= volume <= 50:
+        raise ValueError("buzzer.code_volume must be from 0 to 50")
+    sounds = buzzer.setdefault("sounds", {})
+    for name in sounds:
+        if name not in DEFAULT_SOUNDS:
+            raise ValueError(f"buzzer.sounds.{name} isn't a sound; use waiting, start or crash")
+    buzzer["sounds"] = {name: parse_sound(sounds.get(name, default), name)
+                        for name, default in DEFAULT_SOUNDS.items()}
     return config
+
+
+def parse_sound(steps, name: str) -> Sound:
+    """Check a sound from the config file: a list of [frequency, seconds, volume]."""
+    sound = []
+    for step in steps:
+        if (
+            not isinstance(step, (list, tuple)) or len(step) != 3
+            or not all(isinstance(value, (int, float)) for value in step)
+        ):
+            raise ValueError(f"buzzer.sounds.{name} steps must be [frequency, seconds, volume]")
+        frequency, seconds, volume = step
+        if not (frequency == 0 or 8 <= frequency <= 10_000):
+            raise ValueError(f"buzzer.sounds.{name}: frequency must be 0 or 8 to 10000")
+        if not 0 <= seconds <= 10:
+            raise ValueError(f"buzzer.sounds.{name}: seconds must be 0 to 10")
+        if not 0 <= volume <= 50:
+            raise ValueError(f"buzzer.sounds.{name}: volume must be 0 to 50")
+        sound.append((float(frequency), float(seconds), float(volume)))
+    return sound
 
 
 def start_event() -> str:
@@ -228,6 +269,7 @@ def main() -> None:
     pins = (led["red"], led["green"], led["blue"])
     on, off = (GPIO.HIGH, GPIO.LOW) if led.get("active_high", True) else (GPIO.LOW, GPIO.HIGH)
     status = RobotStatus()
+    status.sounds = config["buzzer"]["sounds"]
     stop = threading.Event()
 
     GPIO.setwarnings(False)
@@ -254,7 +296,10 @@ def main() -> None:
     client.on_connect = on_connect
     client.on_disconnect = on_disconnect
     def on_message(client, userdata, msg):
-        sound = buzz_request(msg.payload) if msg.topic == BUZZER_TOPIC else status.handle(msg.topic, msg.payload)
+        if msg.topic == BUZZER_TOPIC:
+            sound = buzz_request(msg.payload, buzzer_config["code_volume"])
+        else:
+            sound = status.handle(msg.topic, msg.payload)
         if sound is not None:
             buzzer.play(sound)
 

@@ -3,10 +3,12 @@
 from __future__ import annotations
 
 import base64
+import filecmp
 import io
 import json
 import os
 import re
+import shutil
 import threading
 import time
 import tomllib
@@ -53,6 +55,12 @@ LAST_FRAMES: dict[int, np.ndarray] = {}
 USB_MOUNT_ROOT = Path(os.environ.get("PSC_CAMERA_USB_ROOT", "/media/robot"))
 BUILTIN_CALIBRATION_DIR = Path(april_vision.__file__).resolve().parent / "calibrations"
 V4L_ROOT = Path(os.environ.get("PSC_V4L_ROOT", "/sys/class/video4linux"))
+# Calibrations are also kept on code USB drives, in this folder, so they move
+# with the team's code and are imported onto any robot the drive is used with.
+USB_CALIBRATION_FOLDER = "camera-calibrations"
+USB_MANIFEST = "camera-calibrations.toml"
+USB_IMPORT_INTERVAL_S = 5
+RECENT_IMPORTS: list[dict[str, object]] = []
 
 
 def manifest_calibration_locations(root: Path) -> list[str]:
@@ -157,13 +165,8 @@ def cameras() -> list[dict[str, object]]:
     return [dict(camera) for camera in result]
 
 
-def camera_summary() -> list[dict[str, object]]:
-    """
-    List connected cameras and whether they are calibrated, without opening them.
-
-    This reads sysfs only, so the web UI can poll it while robot code is using
-    a camera.
-    """
+def connected_cameras() -> list[SimpleNamespace]:
+    """List connected USB cameras from sysfs, without opening them."""
     found = []
     for node in V4L_ROOT.glob("video*"):
         try:
@@ -187,6 +190,17 @@ def camera_summary() -> list[dict[str, object]]:
             serial_num=serial_file.read_text().strip() if serial_file.exists() else None,
         ))
     found.sort(key=lambda camera: camera.index)
+    return found
+
+
+def camera_summary() -> list[dict[str, object]]:
+    """
+    List connected cameras and whether they are calibrated, without opening them.
+
+    This reads sysfs only, so the web UI can poll it while robot code is using
+    a camera.
+    """
+    found = connected_cameras()
     calibration_map = generate_calibration_file_map(calibration_locations())
     robot_ids = assign_camera_ids(found) if assign_camera_ids else [None] * len(found)
     summary = []
@@ -201,6 +215,116 @@ def camera_summary() -> list[dict[str, object]]:
             "read_only": is_read_only_calibration(camera),
         })
     return summary
+
+
+def usb_drives() -> list[Path]:
+    """Mounted USB drives (robot code drives, competition drives and others)."""
+    if not USB_MOUNT_ROOT.is_dir():
+        return []
+    drives = []
+    for mount in sorted(USB_MOUNT_ROOT.iterdir()):
+        try:
+            if mount.is_dir() and os.path.ismount(mount):
+                drives.append(mount)
+        except OSError:
+            continue
+    return drives
+
+
+def is_code_drive(drive: Path) -> bool:
+    return (drive / "robot.py").is_file() or (drive / "robot-settings.toml").is_file()
+
+
+def save_calibration_to_usb(source: Path) -> list[str]:
+    """
+    Copy a saved calibration onto every writable code USB drive.
+
+    Also adds a camera-calibrations.toml manifest if the drive has none, so
+    robot code can load the calibration straight from the drive.
+
+    :return: The names of the drives it was saved to.
+    """
+    saved = []
+    for drive in usb_drives():
+        if not is_code_drive(drive) or not os.access(drive, os.W_OK):
+            continue
+        try:
+            folder = drive / USB_CALIBRATION_FOLDER
+            folder.mkdir(exist_ok=True)
+            temporary = folder / (source.name + ".tmp")
+            shutil.copyfile(source, temporary)
+            os.replace(temporary, folder / source.name)
+            if not (drive / USB_MANIFEST).exists() and not (drive / "camera-calibrations.json").exists():
+                (drive / USB_MANIFEST).write_text(f'calibrations = ["{USB_CALIBRATION_FOLDER}"]\n')
+            saved.append(drive.name)
+        except OSError as error:
+            print(f"Couldn't save calibration to USB drive {drive}: {error}", flush=True)
+    if saved:
+        os.sync()  # teams often unplug the drive straight after saving
+    return saved
+
+
+def usb_calibration_map() -> dict[str, tuple[Path, str]]:
+    """Map USB ID to (calibration file, drive name) for calibrations on USB drives."""
+    found: dict[str, tuple[Path, str]] = {}
+    for drive in usb_drives():
+        folders = [str(drive / USB_CALIBRATION_FOLDER), *manifest_calibration_locations(drive)]
+        folders = [folder for folder in dict.fromkeys(folders) if Path(folder).is_dir()]
+        for vidpid, path in generate_calibration_file_map(folders).items():
+            found.setdefault(vidpid, (Path(path), drive.name))
+    return found
+
+
+def import_usb_calibrations() -> list[dict[str, object]]:
+    """
+    Import calibrations from USB drives for the cameras that are connected.
+
+    A camera's calibration is copied onto the robot when a USB drive has one
+    and the robot has none or a different one. A replaced calibration is kept
+    in the "replaced" folder.
+    """
+    usb_map = usb_calibration_map()
+    if not usb_map:
+        return []
+    imported = []
+    for camera in connected_cameras():
+        if camera.vidpid not in usb_map:
+            continue
+        source, drive = usb_map[camera.vidpid]
+        target = CALIBRATION_DIR / (camera.vidpid.replace(":", "-") + ".xml")
+        try:
+            if target.exists():
+                if filecmp.cmp(source, target, shallow=False):
+                    continue
+                replaced = CALIBRATION_DIR / "replaced"
+                replaced.mkdir(exist_ok=True)
+                os.replace(target, replaced / f"{target.stem}-{time.strftime('%Y%m%d-%H%M%S')}.xml")
+            temporary = target.with_name(target.name + ".tmp")
+            shutil.copyfile(source, temporary)
+            os.replace(temporary, target)
+        except OSError as error:
+            print(f"Couldn't import calibration {source}: {error}", flush=True)
+            continue
+        record = {"name": camera.name, "vidpid": camera.vidpid, "drive": drive, "time": time.time()}
+        imported.append(record)
+        print(f"Imported calibration for {camera.name} ({camera.vidpid}) from USB drive {drive}", flush=True)
+    if imported:
+        global CAMERA_CACHE
+        with LOCK:
+            RECENT_IMPORTS.extend(imported)
+            del RECENT_IMPORTS[:-20]
+            CAMERA_CACHE = None
+    return imported
+
+
+def watch_usb_calibrations() -> None:
+    """Keep importing calibrations from USB drives as cameras and drives come and go."""
+    while True:
+        try:
+            import_usb_calibrations()
+        except Exception as error:  # keep watching whatever goes wrong
+            print(f"USB calibration import failed: {error}", flush=True)
+        time.sleep(USB_IMPORT_INTERVAL_S)
 
 
 def view_preview(image: np.ndarray, detections: list) -> tuple[str, list[float]]:
@@ -350,7 +474,9 @@ class Handler(BaseHTTPRequestHandler):
 
         if parsed.path == "/api/cameras/summary":
             try:
-                self.send_json(200, {"cameras": camera_summary()})
+                with LOCK:
+                    imports = [item for item in RECENT_IMPORTS if time.time() - item["time"] < 120]
+                self.send_json(200, {"cameras": camera_summary(), "imports": imports})
             except Exception as error:
                 self.send_json(500, {"error": str(error)})
             return
@@ -677,12 +803,16 @@ class Handler(BaseHTTPRequestHandler):
                 write_cal_file(str(filename), len(frames), width, height, matrix, distortion, error, str(body["vidpid"]))
                 with LOCK:
                     SAVED_CALIBRATIONS[session] = filename
+                saved_to_usb = save_calibration_to_usb(filename)
                 print(
                     f"[calibration-debug] session={session} calibration_accepted error={error:.3f} px "
                     f"frames={len(frames)} mean_detected_tags={np.mean(frame_marker_counts):.2f}",
                     flush=True,
                 )
-                self.send_json(200, {"file": str(filename), "reprojection_error": error, "captured_frames": len(frames)})
+                self.send_json(200, {
+                    "file": str(filename), "reprojection_error": error,
+                    "captured_frames": len(frames), "saved_to_usb": saved_to_usb,
+                })
                 return
         except (KeyError, ValueError, RuntimeError) as error:
             self.send_json(400, {"error": str(error)})
@@ -693,4 +823,5 @@ class Handler(BaseHTTPRequestHandler):
 
 if __name__ == "__main__":
     CALIBRATION_DIR.mkdir(parents=True, exist_ok=True)
+    threading.Thread(target=watch_usb_calibrations, name="usb-import", daemon=True).start()
     ThreadingHTTPServer(("127.0.0.1", 8765), Handler).serve_forever()

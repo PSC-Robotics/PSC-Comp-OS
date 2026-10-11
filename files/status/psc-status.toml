@@ -16,6 +16,23 @@ pull = "up"  # internal pull-up, so a press pulls the pin low
 [buzzer]
 pin = 13          # header pin 33
 type = "passive"  # "passive" plays notes; "active" beeps at its own fixed pitch
+# Volume of tones played by robot code (robot.buzzer.buzz), from 0 to 50.
+# Volume is the PWM duty cycle: 50 is a passive buzzer's loudest.
+code_volume = 50
+
+# System sounds: lists of [frequency in Hz, seconds, volume 0-50].
+# A frequency or volume of 0 is a silent gap. Restart psc-statusd after editing.
+[buzzer.sounds]
+# Waiting for the start button: A6 for 0.1s, as Student Robotics uses.
+waiting = [[1760, 0.1, 15]]
+# Start pressed: three rising notes (C6, E6, G6), quiet.
+start = [[1047, 0.06, 8], [1319, 0.06, 8], [1568, 0.1, 8]]
+# Code crashed: six fast short beeps.
+crash = [
+    [2093, 0.06, 15], [0, 0.06, 0], [2093, 0.06, 15], [0, 0.06, 0],
+    [2093, 0.06, 15], [0, 0.06, 0], [2093, 0.06, 15], [0, 0.06, 0],
+    [2093, 0.06, 15], [0, 0.06, 0], [2093, 0.06, 15], [0, 0.06, 0],
+]
 
 [mqtt]
 host = "localhost"

@@ -111,11 +111,32 @@
 		banner.hidden = false;
 	}
 
+	const importNotice = el("div", { class: "notification is-success psc-banner", role: "status", hidden: true });
+	document.body.append(importNotice);
+	let importTimer = null;
+
+	function showImports(imports) {
+		const fresh = imports.filter(item => store.session(`psc-imported:${item.vidpid}:${item.time}`) !== "1");
+		if (!fresh.length) return;
+		fresh.forEach(item => store.session(`psc-imported:${item.vidpid}:${item.time}`, "1"));
+		importNotice.replaceChildren(
+			el("button", { class: "delete", "aria-label": "Dismiss", onclick: () => { importNotice.hidden = true; } }),
+			el("p", {}, el("strong", {}, "Camera calibration imported from USB. "),
+				fresh.map(item => `${item.name} (from ${item.drive})`).join(", "),
+				". Robot code uses it the next time it starts."),
+		);
+		importNotice.hidden = false;
+		clearTimeout(importTimer);
+		importTimer = setTimeout(() => { importNotice.hidden = true; }, 15000);
+		if (calibration.modal.classList.contains("is-active") && calibration.step === "cameras") loadCameras();
+	}
+
 	async function refreshSummary(force = false) {
 		if (document.hidden && !force) return;
 		const { ok, data } = await api("/api/cameras/summary").catch(() => ({ ok: false }));
 		if (!ok) return;
 		summary = data.cameras || [];
+		showImports(data.imports || []);
 		renderBanner();
 	}
 
@@ -500,6 +521,9 @@
 							el("p", {}, el("strong", {}, "What happens now")),
 							el("ul", {},
 								el("li", {}, "Robot code uses this camera the next time it starts. Restart your code if it's running."),
+								data.saved_to_usb?.length
+									? el("li", {}, `Also saved to the USB drive (${data.saved_to_usb.join(", ")}), in the camera-calibrations folder. Plugging that drive into another robot imports it automatically.`)
+									: el("li", {}, "No robot code USB drive was plugged in, so it was only saved on the robot."),
 								usage(camera) ? el("li", {}, "Use it in code as ", code(usage(camera)), ", or ", code("robot.camera"), " if it's the only camera.") : null,
 								el("li", {}, "Other cameras of the same model use this calibration too."),
 							),
