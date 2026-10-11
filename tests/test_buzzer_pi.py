@@ -56,7 +56,7 @@ def test_buzz_without_status_service_does_not_fail() -> None:
 
 
 class FakeGPIO(types.ModuleType):
-    BCM, OUT, IN, PUD_OFF, HIGH, LOW = "BCM", "OUT", "IN", "PUD_OFF", 1, 0
+    BCM, OUT, HIGH, LOW = "BCM", "OUT", 1, 0
 
     def __init__(self, clock):
         super().__init__("RPi.GPIO")
@@ -64,7 +64,6 @@ class FakeGPIO(types.ModuleType):
         self.events = []
         self.setup_pins = []
         self.cleaned = None
-        self.echo = None  # (rise_ns, fall_ns) after the trigger pulse, or None for no echo
 
     def setwarnings(self, flag):
         pass
@@ -72,22 +71,11 @@ class FakeGPIO(types.ModuleType):
     def setmode(self, mode):
         assert mode == self.BCM
 
-    def setup(self, pin, mode, initial=None, pull_up_down=None):
-        self.setup_pins.append((pin, mode, initial if mode == self.OUT else pull_up_down))
+    def setup(self, pin, mode, initial):
+        self.setup_pins.append((pin, mode, initial))
 
     def output(self, pin, value):
         self.events.append((self.clock.now, pin, value))
-        if value == self.LOW and self.echo_after is None and self.trigger_pin == pin:
-            self.echo_after = self.clock.now
-
-    trigger_pin = None
-    echo_after = None
-
-    def input(self, pin):
-        if self.echo is None or self.echo_after is None:
-            return self.LOW
-        rise, fall = self.echo
-        return self.HIGH if rise <= self.clock.now - self.echo_after < fall else self.LOW
 
     def cleanup(self, pins):
         self.cleaned = pins
@@ -153,45 +141,3 @@ def test_stepper_off_the_robot_explains_why() -> None:
 
     with pytest.raises(RuntimeError, match="only available"):
         RaspberryPi(gpio_loader=no_gpio).stepper_move(23, 24, 1)
-
-
-def test_ultrasound_measures_echo_time(monkeypatch) -> None:
-    monkeypatch.setattr("sr.robot3.raspberry_pi.time.sleep", lambda secs: None)
-    pi, gpio = make_pi()
-    gpio.trigger_pin = 20
-    # Echo starts 200us after the trigger and lasts 5800us: 1000mm away.
-    gpio.echo = (200_000, 6_000_000)
-
-    distance = pi.ultrasound_measure(20, 21)
-
-    assert distance == pytest.approx(1000, abs=2)
-    assert (20, "OUT", 0) in gpio.setup_pins and (21, "IN", "PUD_OFF") in gpio.setup_pins
-    trigger = [(t, v) for t, pin, v in gpio.events if pin == 20]
-    assert [v for _, v in trigger] == [1, 0]
-    assert trigger[1][0] - trigger[0][0] >= 10_000  # at least a 10us trigger pulse
-
-
-def test_ultrasound_returns_zero_without_echo(monkeypatch) -> None:
-    monkeypatch.setattr("sr.robot3.raspberry_pi.time.sleep", lambda secs: None)
-    pi, gpio = make_pi()
-    gpio.trigger_pin = 20
-    assert pi.ultrasound_measure(20, 21) == 0
-
-
-@pytest.mark.parametrize(
-    ("trigger_pin", "echo_pin", "message"),
-    [(5, 21, "start button"), (20, 13, "buzzer"), (20, 20, "different"), (20, 30, "BCM")],
-)
-def test_ultrasound_rejects_invalid_pins(trigger_pin, echo_pin, message) -> None:
-    pi, gpio = make_pi()
-    with pytest.raises(ValueError, match=message):
-        pi.ultrasound_measure(trigger_pin, echo_pin)
-
-
-def test_pin_can_switch_between_stepper_and_ultrasound(monkeypatch) -> None:
-    monkeypatch.setattr("sr.robot3.raspberry_pi.time.sleep", lambda secs: None)
-    pi, gpio = make_pi()
-    pi.stepper_move(23, 24, 1)
-    gpio.trigger_pin = 20
-    pi.ultrasound_measure(20, 24)  # pin 24 was an output, now an input
-    assert gpio.setup_pins[-1] == (24, "IN", "PUD_OFF")

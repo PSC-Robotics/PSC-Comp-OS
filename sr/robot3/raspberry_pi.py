@@ -20,8 +20,6 @@ MAX_STEP_DELAY_US = 1_000_000
 MAX_STEPS = 1_000_000
 STEP_PULSE_US = 5  # comfortably above the 1-2us minimum of common drivers
 DIRECTION_SETUP_US = 5
-ULTRASOUND_TRIGGER_US = 10  # the HC-SR04 needs a trigger pulse of at least 10us
-ULTRASOUND_TIMEOUT_US = 60_000  # matches the Arduino firmware; beyond ~4m
 
 
 def _load_gpio() -> ModuleType:
@@ -38,8 +36,8 @@ class RaspberryPi:
     """
     Devices wired directly to the brain board's Raspberry Pi GPIO header.
 
-    Supports stepper motor drivers and ultrasound sensors. Pins are given as
-    BCM GPIO numbers (e.g. 23 for GPIO 23, header pin 16), not header pin numbers.
+    Supports stepper motor drivers. Pins are given as BCM GPIO numbers
+    (e.g. 23 for GPIO 23, header pin 16), not header pin numbers.
 
     :param gpio_loader: Returns the RPi.GPIO module; replaced in tests.
     :param clock_ns: A monotonic clock in nanoseconds; replaced in tests.
@@ -69,13 +67,6 @@ class RaspberryPi:
         if self._pin_modes.get(pin) != 'output':
             gpio.setup(pin, gpio.OUT, initial=gpio.LOW)
             self._pin_modes[pin] = 'output'
-        return gpio
-
-    def _setup_input(self, pin: int) -> ModuleType:
-        gpio = self._load()
-        if self._pin_modes.get(pin) != 'input':
-            gpio.setup(pin, gpio.IN, pull_up_down=gpio.PUD_OFF)
-            self._pin_modes[pin] = 'input'
         return gpio
 
     def _cleanup(self) -> None:
@@ -162,61 +153,6 @@ class RaspberryPi:
             next_step_ns += period_ns
         # Keep the step spacing if another move follows straight away.
         self._wait_until(next_step_ns)
-
-    def _wait_for_level(
-        self, gpio: ModuleType, pin: int, level: int, deadline_ns: int,
-    ) -> bool:
-        """Spin until the pin reads the given level; False if the deadline passes first."""
-        while gpio.input(pin) != level:
-            if self._clock_ns() > deadline_ns:
-                return False
-        return True
-
-    @log_to_debug
-    def ultrasound_measure(self, trigger_pin: int, echo_pin: int) -> int:
-        """
-        Measure the distance to an object using an HC-SR04 ultrasound sensor.
-
-        The sensor can only measure distances up to about 4m. If no echo is
-        detected, 0 is returned, as with the Arduino.
-
-        The HC-SR04's echo output is 5V, so it must be connected to the Pi
-        through a voltage divider (or use a 3.3V sensor such as the HC-SR04P).
-
-        :param trigger_pin: BCM GPIO number connected to the sensor's TRIG input.
-        :param echo_pin: BCM GPIO number connected to the sensor's ECHO output.
-        :raises ValueError: If either of the pins are invalid.
-        :raises RuntimeError: If not running on the robot.
-        :return: The distance measured by the ultrasound sensor in mm.
-        """
-        self._check_pin(trigger_pin, "trigger_pin")
-        self._check_pin(echo_pin, "echo_pin")
-        if trigger_pin == echo_pin:
-            raise ValueError("trigger_pin and echo_pin must be different")
-
-        gpio = self._setup_output(trigger_pin)
-        self._setup_input(echo_pin)
-        timeout_ns = ULTRASOUND_TIMEOUT_US * 1000
-
-        # Let any echo from a previous measurement finish first.
-        if not self._wait_for_level(gpio, echo_pin, gpio.LOW, self._clock_ns() + timeout_ns):
-            return 0
-
-        gpio.output(trigger_pin, gpio.HIGH)
-        self._wait_until(self._clock_ns() + ULTRASOUND_TRIGGER_US * 1000)
-        gpio.output(trigger_pin, gpio.LOW)
-
-        deadline_ns = self._clock_ns() + timeout_ns
-        if not self._wait_for_level(gpio, echo_pin, gpio.HIGH, deadline_ns):
-            return 0
-        echo_start_ns = self._clock_ns()
-        if not self._wait_for_level(gpio, echo_pin, gpio.LOW, deadline_ns):
-            return 0
-        echo_us = (self._clock_ns() - echo_start_ns) // 1000
-
-        # Sound travels out and back at about 340 m/s (29us per cm), as in the
-        # Arduino firmware, so both give the same distances.
-        return 5 * echo_us // 29
 
     def __repr__(self) -> str:
         return f"<{self.__class__.__qualname__}>"
