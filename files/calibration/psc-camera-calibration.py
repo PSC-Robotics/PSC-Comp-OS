@@ -2,15 +2,18 @@
 """Small local camera calibration service for the PSC Robotics web UI."""
 from __future__ import annotations
 
+import base64
 import io
 import json
 import os
+import re
 import threading
 import time
 import tomllib
 import xml.etree.ElementTree as ET
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
+from types import SimpleNamespace
 from urllib.parse import parse_qs, urlparse
 
 import cv2
@@ -18,9 +21,17 @@ import numpy as np
 from PIL import Image
 import april_vision
 from april_vision import calibrations, find_cameras
+from april_vision.detect_cameras import generate_calibration_file_map
 from april_vision.cli.calibrate import CalBoard, parse_detections, write_cal_file
 from april_vision.utils import Frame
 from april_vision.vision import Processor
+
+try:
+    # Use the robot API's own naming so this page shows the same camera IDs.
+    from sr.robot3.camera import assign_camera_ids
+except Exception as error:  # e.g. RPi.GPIO refuses to load off a Raspberry Pi
+    print(f"Camera IDs unavailable: {error}", flush=True)
+    assign_camera_ids = None
 
 CALIBRATION_DIR = Path(os.environ.get(
     "PSC_CALIBRATION_DIR", "/var/lib/psc-robotics/calibrations"
@@ -41,6 +52,7 @@ ACTIVE_STREAMS: set[int] = set()
 LAST_FRAMES: dict[int, np.ndarray] = {}
 USB_MOUNT_ROOT = Path(os.environ.get("PSC_CAMERA_USB_ROOT", "/media/robot"))
 BUILTIN_CALIBRATION_DIR = Path(april_vision.__file__).resolve().parent / "calibrations"
+V4L_ROOT = Path(os.environ.get("PSC_V4L_ROOT", "/sys/class/video4linux"))
 
 
 def manifest_calibration_locations(root: Path) -> list[str]:
@@ -106,10 +118,10 @@ def cameras() -> list[dict[str, object]]:
     with LOCK:
         if CAMERA_CACHE is not None and ACTIVE_STREAMS:
             return [dict(camera) for camera in CAMERA_CACHE]
-    detected = {
-        camera.index: camera
-        for camera in find_cameras(calibration_locations(), include_uncalibrated=True)
-    }
+    found = find_cameras(calibration_locations(), include_uncalibrated=True)
+    robot_ids = assign_camera_ids(found) if assign_camera_ids else [None] * len(found)
+    detected = {camera.index: camera for camera in found}
+    robot_id_by_index = {camera.index: robot_id for camera, robot_id in zip(found, robot_ids)}
     result = []
     for index in range(10):
         device = f"/dev/video{index}"
@@ -129,6 +141,7 @@ def cameras() -> list[dict[str, object]]:
             "name": camera.name if camera else f"USB webcam {index}",
             "vidpid": vidpid,
             "serial": camera.serial_num if camera else None,
+            "robot_id": robot_id_by_index.get(index),
             "calibrated": bool(camera and camera.calibration is not None),
             "read_only": bool(camera and is_read_only_calibration(camera)),
             "calibration_source": (
@@ -142,6 +155,72 @@ def cameras() -> list[dict[str, object]]:
     with LOCK:
         CAMERA_CACHE = result
     return [dict(camera) for camera in result]
+
+
+def camera_summary() -> list[dict[str, object]]:
+    """
+    List connected cameras and whether they are calibrated, without opening them.
+
+    This reads sysfs only, so the web UI can poll it while robot code is using
+    a camera.
+    """
+    found = []
+    for node in V4L_ROOT.glob("video*"):
+        try:
+            index = int(node.name[5:])
+            # UVC webcams also expose a metadata node (index 1) that isn't a camera.
+            if (node / "index").read_text().strip() != "0":
+                continue
+            name = (node / "name").read_text().strip()
+            product = re.search(
+                r"PRODUCT=([0-9a-f]{1,4})/([0-9a-f]{1,4})", (node / "device/uevent").read_text()
+            )
+        except (OSError, ValueError):
+            continue
+        if product is None:
+            continue
+        serial_file = node / "device/../serial"
+        found.append(SimpleNamespace(
+            index=index,
+            name=name,
+            vidpid=f"{int(product[1], 16):04x}:{int(product[2], 16):04x}",
+            serial_num=serial_file.read_text().strip() if serial_file.exists() else None,
+        ))
+    found.sort(key=lambda camera: camera.index)
+    calibration_map = generate_calibration_file_map(calibration_locations())
+    robot_ids = assign_camera_ids(found) if assign_camera_ids else [None] * len(found)
+    summary = []
+    for camera, robot_id in zip(found, robot_ids):
+        camera.calibration = calibration_map.get(camera.vidpid)
+        summary.append({
+            "index": camera.index,
+            "name": camera.name,
+            "vidpid": camera.vidpid,
+            "robot_id": robot_id,
+            "calibrated": camera.calibration is not None,
+            "read_only": is_read_only_calibration(camera),
+        })
+    return summary
+
+
+def view_preview(image: np.ndarray, detections: list) -> tuple[str, list[float]]:
+    """Return a small annotated JPEG of a captured view and the board's bounding box."""
+    height, width = image.shape[:2]
+    corners = np.array(
+        [[corner.x, corner.y] for detection in detections for corner in detection.pixel_corners],
+        dtype=np.float32,
+    )
+    preview = image.copy()
+    for detection in detections:
+        outline = np.array([[corner.x, corner.y] for corner in detection.pixel_corners], dtype=np.int32)
+        cv2.polylines(preview, [outline], True, (80, 200, 80), max(2, width // 320))
+    scale = 240 / width
+    preview = cv2.resize(preview, (240, max(1, int(height * scale))), interpolation=cv2.INTER_AREA)
+    ok, encoded = cv2.imencode(".jpg", preview, [cv2.IMWRITE_JPEG_QUALITY, 70])
+    thumbnail = "data:image/jpeg;base64," + base64.b64encode(encoded.tobytes()).decode() if ok else ""
+    x0, y0 = corners.min(axis=0)
+    x1, y1 = corners.max(axis=0)
+    return thumbnail, [float(x0 / width), float(y0 / height), float(x1 / width), float(y1 / height)]
 
 
 def capture_frame(index: int) -> np.ndarray:
@@ -265,6 +344,13 @@ class Handler(BaseHTTPRequestHandler):
         if parsed.path == "/api/cameras":
             try:
                 self.send_json(200, {"cameras": cameras()})
+            except Exception as error:
+                self.send_json(500, {"error": str(error)})
+            return
+
+        if parsed.path == "/api/cameras/summary":
+            try:
+                self.send_json(200, {"cameras": camera_summary()})
             except Exception as error:
                 self.send_json(500, {"error": str(error)})
             return
@@ -454,6 +540,7 @@ class Handler(BaseHTTPRequestHandler):
                 ]
                 points = parse_detections(detections, board)
                 marker_ids = sorted(int(detection.id) for detection in detections)
+                thumbnail, board_box = view_preview(image, detections)
                 resolution = (int(image.shape[1]), int(image.shape[0]))
                 with LOCK:
                     SESSIONS.setdefault(session, []).append(
@@ -472,10 +559,25 @@ class Handler(BaseHTTPRequestHandler):
                         "detected_markers": detected_markers,
                         "detected_marker_ids": marker_ids,
                         "detected_corners": len(points[1]),
+                        "total_markers": rows * columns,
                         "frame_resolution": resolution,
+                        "thumbnail": thumbnail,
+                        "board_box": board_box,
                         "board": {"rows": rows, "columns": columns, "marker_size_mm": marker_size_mm},
                     },
                 )
+                return
+
+            if parsed.path == "/api/calibration/remove":
+                session = str(body.get("session", "default"))
+                view = int(body["view"])
+                with LOCK:
+                    views = SESSIONS.get(session, [])
+                    if not 1 <= view <= len(views):
+                        raise ValueError("No such captured view")
+                    del views[view - 1]
+                    count = len(views)
+                self.send_json(200, {"captured": count})
                 return
 
             if parsed.path == "/api/calibration/finish":
@@ -559,6 +661,11 @@ class Handler(BaseHTTPRequestHandler):
                         },
                     )
                     return
+                if not re.fullmatch(r"[0-9a-f]{4}:[0-9a-f]{4}", str(body["vidpid"])):
+                    raise ValueError(
+                        "This camera does not report a USB ID, so robot code cannot match a "
+                        "calibration to it."
+                    )
                 CALIBRATION_DIR.mkdir(parents=True, exist_ok=True)
                 safe_vidpid = "".join(
                     char if char.isalnum() or char in "-_." else "-"

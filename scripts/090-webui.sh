@@ -21,10 +21,13 @@ unzip /tmp/webui/webui.zip -d /tmp/webui/
 
 mkdir /usr/share/kit-ui
 mv /tmp/webui/dist/* /usr/share/kit-ui/
+# PSC additions to the main UI: camera calibration dialog, uncalibrated-camera
+# banner and multi-camera view. /calibrate redirects to the dialog.
 install -o root -g root -m 644 /tmp/packer/webui/calibrate.html /usr/share/kit-ui/calibrate.html
-
-# Add a stable link from the downloaded main UI to the local calibration page.
-sed -i 's|</body>|<p><a href="/calibrate">Camera calibration</a></p></body>|' /usr/share/kit-ui/index.html
+install -o root -g root -m 644 /tmp/packer/webui/psc-ui.js /usr/share/kit-ui/psc-ui.js
+install -o root -g root -m 644 /tmp/packer/webui/psc-ui.css /usr/share/kit-ui/psc-ui.css
+sed -i 's|</body>|<script src="/psc-ui.js" defer></script></body>|' /usr/share/kit-ui/index.html
+grep -q 'psc-ui.js' /usr/share/kit-ui/index.html
 
 chown -R root:www-data /usr/share/kit-ui
 chmod -R 755 /usr/share/kit-ui

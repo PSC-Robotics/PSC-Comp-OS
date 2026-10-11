@@ -1,0 +1,97 @@
+/* PSC Robotics additions to kit-ui. Uses Bulma's theme variables so light and
+   dark mode follow the main UI. */
+
+/* Toolbar button and attention dot */
+.psc-cal-button { position: relative; }
+.psc-dot {
+	position: absolute; top: 4px; right: 4px; width: 9px; height: 9px; border-radius: 50%;
+	background: var(--bulma-warning); box-shadow: 0 0 0 2px var(--bulma-scheme-main);
+}
+
+/* Uncalibrated camera banner */
+.psc-banner {
+	position: fixed; top: 60px; left: 50%; transform: translateX(-50%); z-index: 35;
+	width: min(640px, calc(100vw - 32px)); margin: 0; padding: 14px 44px 14px 16px;
+	box-shadow: 0 10px 30px rgb(0 0 0 / 0.18);
+}
+.psc-banner p { margin: 0 0 10px; }
+.psc-banner .buttons { margin: 0; }
+@media (max-width: 768px) { .psc-banner { top: 12px; } }
+
+/* Multi-camera grid in kit-ui's camera view */
+#psc-camera-grid { display: none; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); gap: 14px; }
+#psc-camera-grid.is-multi { display: grid; }
+#psc-camera-grid figure { margin: 0; }
+#psc-camera-grid img { display: block; width: 100%; background: #0d2438; border-radius: 4px; }
+.psc-camera-caption { margin-top: 6px; font-size: 13px; color: var(--bulma-text-weak); }
+#modal-camera .modal-card.psc-camera-wide { width: min(1100px, 95vw); }
+
+/* Calibration dialog */
+#psc-calibration .modal-card { width: min(1000px, calc(100vw - 24px)); max-height: calc(100vh - 24px); }
+#psc-calibration .modal-card-title { display: flex; align-items: center; gap: 8px; }
+#psc-calibration .modal-card-foot { justify-content: space-between; gap: 8px; }
+#psc-calibration .modal-card-foot .buttons { margin: 0; }
+#psc-calibration code { font-size: 0.9em; }
+
+.psc-steps { display: flex; gap: 6px; margin: 0 0 18px; padding: 0; list-style: none; }
+.psc-steps li {
+	flex: 1; padding: 8px 10px; border-radius: 6px; font-size: 14px;
+	background: var(--bulma-background); color: var(--bulma-text-weak);
+}
+.psc-steps li.is-current { background: var(--bulma-link); color: var(--bulma-link-invert); font-weight: 600; }
+.psc-steps li.is-done { color: var(--bulma-success); }
+@media (max-width: 640px) { .psc-steps li:not(.is-current) { display: none; } }
+
+.psc-camera-list { display: grid; gap: 10px; }
+.psc-camera-row {
+	display: flex; align-items: center; gap: 14px; padding: 14px; margin: 0 !important;
+	border: 1px solid var(--bulma-border-weak); border-radius: 8px;
+}
+.psc-camera-row .psc-camera-info { flex: 1; min-width: 0; }
+.psc-camera-row .psc-camera-name { font-weight: 600; }
+.psc-camera-row .psc-camera-meta { font-size: 14px; color: var(--bulma-text-weak); overflow-wrap: anywhere; }
+@media (max-width: 640px) { .psc-camera-row { flex-wrap: wrap; } }
+
+.psc-checklist { counter-reset: item; list-style: none; margin: 0 0 16px; padding: 0; display: grid; gap: 12px; }
+.psc-checklist li { display: grid; grid-template-columns: 32px 1fr; gap: 10px; align-items: start; }
+.psc-checklist li::before {
+	counter-increment: item; content: counter(item); display: grid; place-items: center; width: 28px; height: 28px;
+	border-radius: 50%; background: var(--bulma-link); color: var(--bulma-link-invert); font-weight: 700;
+}
+.psc-checklist li > div > strong:first-child { display: block; }
+
+.psc-capture { display: grid; grid-template-columns: minmax(0, 1.5fr) minmax(260px, 1fr); gap: 18px; align-items: start; }
+@media (max-width: 760px) { .psc-capture { grid-template-columns: 1fr; } }
+.psc-preview {
+	position: relative; aspect-ratio: 16 / 9; display: grid; place-items: center; overflow: hidden;
+	background: #0d2438; border-radius: 8px; color: #b8c6d1;
+}
+.psc-preview img { width: 100%; height: 100%; object-fit: contain; }
+.psc-flash { animation: psc-flash 0.35s ease-out; }
+@keyframes psc-flash { from { box-shadow: inset 0 0 0 6px var(--bulma-success); } to { box-shadow: none; } }
+
+.psc-next { display: flex; gap: 10px; align-items: flex-start; padding: 12px; border-radius: 8px; background: var(--bulma-link-soft, var(--bulma-background)); }
+.psc-next .material-symbols-outlined { color: var(--bulma-link); }
+.psc-next p { margin: 0; }
+.psc-next small { color: var(--bulma-text-weak); }
+
+.psc-variety { display: flex; gap: 14px; align-items: flex-end; flex-wrap: wrap; }
+.psc-coverage { display: grid; grid-template-columns: repeat(3, 1fr); gap: 3px; width: 128px; aspect-ratio: 16 / 9; margin-top: 4px; }
+.psc-coverage div { border-radius: 4px; background: var(--bulma-background); border: 1px dashed var(--bulma-border); }
+.psc-coverage div.is-covered { background: var(--bulma-success); border-color: transparent; opacity: 0.85; }
+.psc-chips { display: flex; gap: 6px; flex-wrap: wrap; flex-direction: column; align-items: flex-start; }
+
+.psc-views { display: grid; grid-template-columns: repeat(auto-fill, minmax(120px, 1fr)); gap: 10px; margin-top: 16px; }
+.psc-view { position: relative; margin: 0; }
+.psc-view img { display: block; width: 100%; border-radius: 6px; background: #0d2438; }
+.psc-view figcaption { font-size: 12px; color: var(--bulma-text-weak); margin-top: 2px; }
+.psc-view .delete { position: absolute; top: 4px; right: 4px; }
+.psc-view.is-worst img { outline: 3px solid var(--bulma-danger); }
+
+.psc-result-figure { font-size: 40px; font-weight: 700; line-height: 1.1; }
+.psc-history { margin-top: 18px; }
+.psc-history summary { cursor: pointer; font-weight: 600; }
+.psc-history table { margin-top: 8px; }
+#psc-calibration .tag .material-symbols-outlined,
+#psc-calibration .button .material-symbols-outlined { font-size: 18px; }
+#psc-calibration .tag .material-symbols-outlined { margin-right: 2px; }

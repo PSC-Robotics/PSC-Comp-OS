@@ -19,33 +19,39 @@ firmware paths.
 ## Web Interface
 
 The kit UI is served by nginx on port 80. On a device connected to the robot's
-network, open `http://robot.lan/`; the camera setup page is at
-`http://robot.lan/calibrate`. If local DNS is unavailable, use the Raspberry
-Pi's IP address with the same paths.
+network, open `http://robot.lan/`. If local DNS is unavailable, use the
+Raspberry Pi's IP address.
 
-For camera calibration:
+### Camera calibration
 
-1. Connect a standard USB UVC webcam.
-2. Open `/calibrate` and download the A4 landscape AprilTag PDF. The page shows
-	a continuous live webcam preview to help position the board. Print the PDF at
-	actual size (100% scale), with “fit to page” disabled, then verify the printed
-	tag size matches the value shown on the page. The default 6-by-4 board fits on
-	one landscape A4 sheet while retaining the correct calibration spacing.
-3. Select the webcam, capture at least 10 clear board views from varied angles
-	and distances, and save the calibration. Keep the printed board rigid and
-	flat; do not bend or curl it. Each accepted frame must show at least 6 clearly
-	detected tags, but the whole sheet need not fit in the frame.
-4. The OpenCV XML calibration is saved in
-	`/var/lib/psc-robotics/calibrations`. The calibration directory is supplied
-	to the camera service and Astoria-launched robot programs through
-	`OPENCV_CALIBRATIONS`.
-	Results above 2 pixels reprojection error are rejected and are not saved;
-	reposition or reprint the board and capture clearer, varied views.
-	The calibration page lists previous results, including rejected calibrations,
-	with their date, frame count, resolution, and reprojection error.
+Camera calibration is part of the main page: select the calibration button
+(the focus icon) in the toolbar. `http://robot.lan/calibrate` opens the same
+dialog. When a connected camera isn't calibrated, a banner appears with a
+**Calibrate now** button, and the toolbar button shows a dot. Detection reads
+sysfs only, so it never opens a camera that robot code is using.
+
+The dialog guides you through four steps:
+
+1. **Choose camera.** Each camera shows its name in robot code
+	(`robot.cameras["..."]`) and whether it is calibrated, uses a built-in
+	calibration, or can't be used (no USB ID to match a calibration to).
+2. **Print the board.** Download the A4 PDF, print it at actual size (100%,
+	"fit to page" off), check a black square measures 40 mm, and keep it flat.
+3. **Capture views.** A live preview, a suggested next pose, a map of where
+	the board has been, and a thumbnail of each view (remove any bad ones).
+	At least 10 views are needed; up to 15 improves accuracy. Each view needs at
+	least 6 clearly detected tags. Space captures a view. Capturing is disabled
+	while robot code is running, as it may be using the camera.
+4. **Save.** Calibrations with an average error above 2 px are rejected and not
+	saved; the worst views are highlighted so they can be removed and replaced.
+
+Calibrations are saved in `/var/lib/psc-robotics/calibrations`, one per camera
+model (USB ID), so identical cameras share one. Robot programs find them through
+`OPENCV_CALIBRATIONS` and use them the next time they start. Saved calibrations
+can be downloaded from the dialog.
 
 The Logitech calibrations bundled with `april_vision` appear as built-in,
-read-only cameras in the setup page. To provide team calibrations on a code USB,
+read-only cameras in the calibration dialog. To provide team calibrations on a code USB,
 place XML files in a directory such as `camera-calibrations/` and add a root
 manifest named `camera-calibrations.toml` containing
 `calibrations = ["camera-calibrations"]`, or JSON containing
@@ -57,6 +63,52 @@ Useful service diagnostics:
 ```sh
 systemctl status nginx psc-camera-calibration
 journalctl -u nginx -u psc-camera-calibration
+```
+
+## Status LED, Buzzer And Start Button
+
+`psc-statusd` shows the robot's state on an RGB LED, plays sounds on a buzzer
+and handles a physical start button. The pins (BCM numbers), LED polarity and
+buzzer type are set in `/etc/psc-status.toml`:
+
+| Signal | BCM | Header pin |
+| --- | --- | --- |
+| LED blue | 17 | 11 |
+| LED green | 27 | 13 |
+| LED red | 22 | 15 |
+| Start button | 5 | 29 |
+| Buzzer (passive) | 13 | 33 |
+
+| LED | Meaning |
+| --- | --- |
+| Blue, flashing | Booting (solid blue from power-on until the service starts) |
+| Green | Ready |
+| Green, flashing | Robot code is waiting for the start button |
+| Blue | Robot code running |
+| Red | Robot code crashed |
+
+| Sound | Meaning |
+| --- | --- |
+| One beep | Robot code is waiting for the start button |
+| One higher beep | Start was pressed |
+| Fast short beeps | Robot code crashed |
+
+Robot code plays tones with `robot.buzzer.buzz()`, which asks `psc-statusd` to
+play them over MQTT (`psc/buzzer`), so only one process drives the buzzer pin.
+A tone left playing is stopped when the code finishes or is killed.
+
+The LED is common-cathode (`active_high = true`). Wire the start button between
+GPIO 5 and GND; the internal pull-up is enabled. Never connect a GPIO pin to
+5V. A press sends the same start event as the web UI's Start button. If the
+pins change, also update the `gpio=` lines in `/boot/config.txt`.
+
+The Student Robotics `kchd` and `boot_40` services are not installed because
+they drive the KCH hat's pins, and robot code runs with `SR_KCH_HAT=0` so the
+API's `robot.kch` LEDs leave these pins alone.
+
+```sh
+systemctl status psc-statusd
+journalctl -u psc-statusd
 ```
 
 ## Networking And USB
