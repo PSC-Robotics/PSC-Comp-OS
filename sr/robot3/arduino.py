@@ -27,13 +27,35 @@ if IN_SIMULATOR:
 else:
     ENDLINE = ''
 
+# USB IDs of boards the PSC firmware runs on, from the Arduino cores' boards.txt.
+# The board is only used if it then answers with SR-compatible firmware.
 SUPPORTED_VID_PIDS = {
-    (0x2341, 0x0043),  # Arduino Uno rev 3
-    (0x2A03, 0x0043),  # Arduino Uno rev 3
-    (0x1A86, 0x7523),  # Uno
-    (0x10C4, 0xEA60),  # Ruggeduino
-    (0x16D0, 0x0613),  # Ruggeduino
+    # Uno R3, Uno Mini
+    (0x2341, 0x0043), (0x2341, 0x0001), (0x2341, 0x0243), (0x2341, 0x006A),
+    (0x2341, 0x0062), (0x2A03, 0x0043),
+    # Uno R4 Minima and WiFi
+    (0x2341, 0x0069), (0x2341, 0x0369), (0x2341, 0x1002), (0x2341, 0x006D),
+    # Mega 2560
+    (0x2341, 0x0010), (0x2341, 0x0042), (0x2341, 0x0210), (0x2341, 0x0242),
+    (0x2A03, 0x0010), (0x2A03, 0x0042),
+    # Leonardo and Micro (running a sketch, not the bootloader)
+    (0x2341, 0x8036), (0x2A03, 0x8036), (0x2341, 0x8037), (0x2A03, 0x8037),
+    (0x2341, 0x8237),
+    # Nano Every, Uno WiFi Rev2
+    (0x2341, 0x0058), (0x03EB, 0x2145),
+    # Due (Programming Port)
+    (0x2341, 0x003D), (0x2A03, 0x003D),
+    # Zero (Programming Port), Nano 33 IoT, MKR WiFi 1010, MKR Zero
+    (0x03EB, 0x2157), (0x2341, 0x8057), (0x2341, 0x8054), (0x2341, 0x804F),
+    # Clones with CH340 / CH9102 USB chips
+    (0x1A86, 0x7523), (0x1A86, 0x55D4),
+    # Ruggeduino
+    (0x10C4, 0xEA60), (0x16D0, 0x0613),
 }
+
+# Firmware from this version reports its analog reference voltage ('m' command).
+ANALOG_REFERENCE_FW_VERSION = 5
+DEFAULT_ANALOG_REFERENCE_V = 5.0
 
 
 class GPIOPinMode(str, Enum):
@@ -69,7 +91,8 @@ class Arduino(Board):
     """
     The Arduino board interface.
 
-    This is intended to be used with Arduino Uno boards running the SR firmware.
+    This is intended to be used with Arduino boards running the SR or PSC
+    firmware. Pins are numbered like an Uno (2-13, A0-A5) on every board.
 
     :param serial_port: The serial port to connect to.
     :param initial_identity: The identity of the board, as reported by the USB descriptor.
@@ -115,6 +138,28 @@ class Arduino(Board):
         if not self._identity.board_type.startswith('SR'):
             raise IncorrectBoardError(self._identity.board_type, 'SR*')
         self._serial.set_identity(self._identity)
+
+        analog_reference = self._read_analog_reference()
+        for pin in self._pins:
+            pin._analog_reference = analog_reference
+
+    def _read_analog_reference(self) -> float:
+        """
+        Get the voltage that an analog reading's full scale represents.
+
+        3.3V boards such as the Due read up to 3.3V. Firmware before version 5
+        doesn't report it, so 5V is assumed, as on an Uno.
+        """
+        try:
+            version = int(self._identity.sw_version.split('.')[0])
+        except ValueError:
+            return DEFAULT_ANALOG_REFERENCE_V
+        if version < ANALOG_REFERENCE_FW_VERSION:
+            return DEFAULT_ANALOG_REFERENCE_V
+        try:
+            return int(self._serial.query('m', endl=ENDLINE)) / 1000
+        except ValueError:
+            return DEFAULT_ANALOG_REFERENCE_V
 
     @classmethod
     def _get_valid_board(
@@ -391,7 +436,9 @@ class Pin:
     :param supports_analog: Whether the pin supports analog reads.
     :param disabled: Whether the pin can be controlled.
     """
-    __slots__ = ('_serial', '_index', '_supports_analog', '_disabled', '_mode')
+    __slots__ = (
+        '_serial', '_index', '_supports_analog', '_disabled', '_mode', '_analog_reference',
+    )
 
     def __init__(
         self,
@@ -402,6 +449,7 @@ class Pin:
     ):
         self._serial = serial
         self._index = index
+        self._analog_reference = DEFAULT_ANALOG_REFERENCE_V
         self._supports_analog = supports_analog
         self._disabled = disabled
         self._mode = GPIOPinMode.INPUT
@@ -481,10 +529,11 @@ class Pin:
         Get the analog voltage on the pin.
 
         This is returned in volts. Only pins A0-A5 support analog reads.
+        Readings range from 0 to 5V, or 0 to 3.3V on 3.3V boards such as the Due.
 
         :raises IOError: If the pin or its current mode does not support analog read.
         :raises IOError: If this pin cannot be controlled.
-        :return: The analog voltage on the pin, ranges from 0 to 5.
+        :return: The analog voltage on the pin, from 0 to the board's reference voltage.
         """
         ADC_MAX = 1023  # 10 bit ADC
         ADC_MIN = 0
@@ -496,7 +545,7 @@ class Pin:
             raise IOError('Pin does not support analog read')
         response = self._serial.query(self._build_command('a'), endl=ENDLINE)
         # map the response from the ADC range to the voltage range
-        return map_to_float(int(response), ADC_MIN, ADC_MAX, 0.0, 5.0)
+        return map_to_float(int(response), ADC_MIN, ADC_MAX, 0.0, self._analog_reference)
 
     def _check_if_disabled(self) -> None:
         """
