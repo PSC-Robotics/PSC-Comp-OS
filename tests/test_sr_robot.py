@@ -56,6 +56,7 @@ def test_robot(monkeypatch, caplog) -> None:
     monkeypatch.setattr('sr.robot3.motor_board.comports', lambda: [])
     monkeypatch.setattr('sr.robot3.servo_board.comports', lambda: [])
     monkeypatch.setattr('sr.robot3.arduino.comports', lambda: [])
+    monkeypatch.setattr('sr.robot3.bus_servo.comports', lambda: [])
 
     # Forget the camera
     monkeypatch.setattr('sr.robot3.robot._setup_cameras', lambda *_: {})
@@ -137,6 +138,7 @@ def test_robot_without_sr_boards(monkeypatch) -> None:
     monkeypatch.setattr('sr.robot3.motor_board.comports', lambda: [])
     monkeypatch.setattr('sr.robot3.servo_board.comports', lambda: [])
     monkeypatch.setattr('sr.robot3.arduino.comports', lambda: [])
+    monkeypatch.setattr('sr.robot3.bus_servo.comports', lambda: [])
     monkeypatch.setattr('sr.robot3.robot.init_astoria_mqtt', lambda: (None, None))
     monkeypatch.setattr('sr.robot3.robot.KCH', lambda: object())
     monkeypatch.setattr(Robot, '_init_camera', lambda self: setattr(self, '_cameras', {}))
@@ -162,6 +164,7 @@ def test_robot_with_multiple_cameras(monkeypatch) -> None:
     monkeypatch.setattr('sr.robot3.motor_board.comports', lambda: [])
     monkeypatch.setattr('sr.robot3.servo_board.comports', lambda: [])
     monkeypatch.setattr('sr.robot3.arduino.comports', lambda: [])
+    monkeypatch.setattr('sr.robot3.bus_servo.comports', lambda: [])
     monkeypatch.setattr('sr.robot3.robot.init_astoria_mqtt', lambda: (None, None))
     monkeypatch.setattr('sr.robot3.robot.KCH', lambda: object())
     cameras = {"A1B2C3D4": object(), "usb-1-1.2": object()}
@@ -207,6 +210,7 @@ def test_wait_start_announces_state(monkeypatch) -> None:
     monkeypatch.setattr('sr.robot3.motor_board.comports', lambda: [])
     monkeypatch.setattr('sr.robot3.servo_board.comports', lambda: [])
     monkeypatch.setattr('sr.robot3.arduino.comports', lambda: [])
+    monkeypatch.setattr('sr.robot3.bus_servo.comports', lambda: [])
     monkeypatch.setattr(
         'sr.robot3.robot.init_astoria_mqtt', lambda: (FakeMQTT(), FakeAstoria()),
     )

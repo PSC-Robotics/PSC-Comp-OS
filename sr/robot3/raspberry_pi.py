@@ -11,9 +11,11 @@ from .logging import log_to_debug
 
 LOGGER = logging.getLogger(__name__)
 
-# Pins the robot itself uses: the status LED (17, 27, 22), the start button (5)
-# and the buzzer (13). Pins 0 and 1 are reserved for the HAT EEPROM.
+# Pins the robot itself uses: the status LED (17, 27, 22), the start button (5),
+# the buzzer (13) and the serial port for bus servos (14, 15).
+# Pins 0 and 1 are reserved for the HAT EEPROM.
 RESERVED_PINS = {0: "HAT EEPROM", 1: "HAT EEPROM", 5: "the start button", 13: "the buzzer",
+                 14: "the serial port (bus servos)", 15: "the serial port (bus servos)",
                  17: "the status LED", 22: "the status LED", 27: "the status LED"}
 MIN_STEP_DELAY_US = 50
 MAX_STEP_DELAY_US = 1_000_000

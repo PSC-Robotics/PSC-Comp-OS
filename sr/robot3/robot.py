@@ -14,6 +14,7 @@ from . import game_specific, timeout
 from ._version import __version__
 from .arduino import Arduino
 from .astoria import Metadata, RobotMode, init_astoria_mqtt
+from .bus_servo import BusServoAdapter
 from .buzzer import Buzzer
 from .camera import AprilCamera, _setup_cameras
 from .exceptions import MetadataNotReadyError
@@ -54,7 +55,7 @@ class Robot(metaclass=FinalMeta):
     __slots__ = (
         '_lock', '_metadata', '_power_board', '_motor_boards', '_servo_boards',
         '_arduinos', '_cameras', '_mqtt', '_astoria', '_kch', '_raw_ports',
-        '_time_server', '_no_powerboard', '_buzzer', '_raspberry_pi',
+        '_time_server', '_no_powerboard', '_buzzer', '_raspberry_pi', '_bus_servo_adapters',
     )
 
     def __init__(
@@ -159,6 +160,11 @@ class Robot(metaclass=FinalMeta):
         self._motor_boards = MotorBoard._get_supported_boards(manual_motorboards)
         self._servo_boards = ServoBoard._get_supported_boards(manual_servoboards)
         self._arduinos = Arduino._get_supported_boards(manual_arduinos, ignored_arduinos)
+        self._bus_servo_adapters = (
+            BusServoAdapter._get_supported_boards(
+                manual_boards.get(BusServoAdapter.get_board_type(), []))
+            if not IN_SIMULATOR else MappingProxyType({})
+        )
         if raw_ports:
             if not IN_SIMULATOR:
                 self._raw_ports = RawSerial._get_supported_boards(raw_ports)
@@ -196,6 +202,7 @@ class Robot(metaclass=FinalMeta):
             self.motor_boards.values(),
             self.servo_boards.values(),
             self.arduinos.values(),
+            self._bus_servo_adapters.values(),
             self._cameras.values(),
             self.raw_serial_devices.values(),
         )
@@ -207,6 +214,30 @@ class Robot(metaclass=FinalMeta):
                 f"Firmware Version of {identity.asset_tag}: {identity.sw_version}, "
                 f"reported type: {identity.board_type}",
             )
+
+    @property
+    def bus_servo_adapter(self) -> BusServoAdapter:
+        """
+        Access the bus servo adapter connected to the robot.
+
+        This can only be used if there is exactly one bus servo adapter connected.
+
+        :return: The bus servo adapter
+        :raises RuntimeError: If there is not exactly one bus servo adapter connected
+        """
+        return singular(self._bus_servo_adapters)
+
+    @property
+    def bus_servo_adapters(self) -> Mapping[str, BusServoAdapter]:
+        """
+        Access the bus servo adapters connected to the robot.
+
+        USB adapters are keyed by their USB serial number, and an adapter on
+        the Raspberry Pi's serial port (GPIO 14 and 15) by "gpio".
+
+        :return: A mapping of names to bus servo adapters
+        """
+        return self._bus_servo_adapters
 
     @property
     def buzzer(self) -> Buzzer:
