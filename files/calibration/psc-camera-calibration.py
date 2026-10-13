@@ -61,6 +61,9 @@ USB_CALIBRATION_FOLDER = "camera-calibrations"
 USB_MANIFEST = "camera-calibrations.toml"
 USB_IMPORT_INTERVAL_S = 5
 RECENT_IMPORTS: list[dict[str, object]] = []
+# Set while robot code is running: live streams stop, so the code can use the cameras.
+CODE_RUNNING = threading.Event()
+CODE_RUNNING_MESSAGE = "Robot code is running and may be using the camera. Stop it to see the live view."
 
 
 def manifest_calibration_locations(root: Path) -> list[str]:
@@ -317,6 +320,35 @@ def import_usb_calibrations() -> list[dict[str, object]]:
     return imported
 
 
+def watch_code_status() -> None:
+    """Track whether robot code is running, from astprocd's status on MQTT."""
+    try:
+        import paho.mqtt.client as mqtt
+    except ImportError:
+        print("paho-mqtt unavailable; live streams won't stop for robot code", flush=True)
+        return
+
+    def on_connect(client, userdata, flags, reason_code, properties=None):
+        client.subscribe("astoria/astprocd")
+
+    def on_message(client, userdata, message):
+        try:
+            status = json.loads(message.payload).get("code_status")
+        except (ValueError, AttributeError):
+            return
+        if status in ("code_starting", "code_running"):
+            CODE_RUNNING.set()
+        else:
+            CODE_RUNNING.clear()
+
+    client = mqtt.Client(mqtt.CallbackAPIVersion.VERSION2, client_id="psc-camera-calibration")
+    client.on_connect = on_connect
+    client.on_message = on_message
+    client.reconnect_delay_set(min_delay=1, max_delay=5)
+    client.connect_async("localhost", 1883)
+    client.loop_start()
+
+
 def watch_usb_calibrations() -> None:
     """Keep importing calibrations from USB drives as cameras and drives come and go."""
     while True:
@@ -520,6 +552,9 @@ class Handler(BaseHTTPRequestHandler):
         if parsed.path == "/api/stream":
             query = parse_qs(parsed.query)
             index = int(query.get("index", [0])[0])
+            if CODE_RUNNING.is_set():
+                self.send_json(409, {"error": CODE_RUNNING_MESSAGE})
+                return
             with LOCK:
                 ACTIVE_STREAMS.add(index)
             capture = cv2.VideoCapture(index)
@@ -536,7 +571,7 @@ class Handler(BaseHTTPRequestHandler):
             self.send_header("Connection", "close")
             self.end_headers()
             try:
-                while True:
+                while not CODE_RUNNING.is_set():
                     ok, frame = capture.read()
                     if not ok:
                         time.sleep(0.05)
@@ -618,6 +653,9 @@ class Handler(BaseHTTPRequestHandler):
                 return
 
             if parsed.path == "/api/calibration/capture":
+                if CODE_RUNNING.is_set():
+                    self.send_json(409, {"error": CODE_RUNNING_MESSAGE})
+                    return
                 if is_read_only_camera_index(int(body["index"])):
                     self.send_json(403, {"error": "The built-in camera calibration is read-only."})
                     return
@@ -824,4 +862,5 @@ class Handler(BaseHTTPRequestHandler):
 if __name__ == "__main__":
     CALIBRATION_DIR.mkdir(parents=True, exist_ok=True)
     threading.Thread(target=watch_usb_calibrations, name="usb-import", daemon=True).start()
+    watch_code_status()
     ThreadingHTTPServer(("127.0.0.1", 8765), Handler).serve_forever()

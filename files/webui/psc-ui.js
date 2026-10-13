@@ -613,6 +613,51 @@
 		tile.image.src = data;
 	}
 
+	// Live view of every camera while robot code isn't running. The calibration
+	// service also stops these streams itself when code starts.
+	const liveBox = el("div", { id: "psc-live", hidden: true });
+	if (cameraModal) $(".modal-card-body", cameraModal).prepend(liveBox);
+	let liveOn = false;
+
+	function stopLive() {
+		liveBox.querySelectorAll("img").forEach(image => { image.src = "data:,"; });
+		liveBox.replaceChildren();
+		liveBox.hidden = true;
+		cameraModal?.classList.remove("psc-live-on");
+		cameraCard?.classList.remove("psc-camera-wide");
+		liveOn = false;
+		layoutCameras();
+	}
+
+	async function updateLive() {
+		const wanted = cameraModal?.classList.contains("is-active") && !robot.codeRunning;
+		if (!wanted) { if (liveOn) stopLive(); return; }
+		if (liveOn) return;
+		liveOn = true;
+		const { ok, data } = await api("/api/cameras/summary").catch(() => ({ ok: false, data: {} }));
+		if (!liveOn || robot.codeRunning) return;
+		const cameras = ok ? data.cameras || [] : [];
+		cameraModal.classList.add("psc-live-on");
+		cameraCard?.classList.toggle("psc-camera-wide", cameras.length > 1);
+		liveBox.replaceChildren(
+			el("p", { class: "psc-camera-caption psc-live-note" }, icon("videocam"),
+				cameras.length
+					? " Live view. Robot code isn't running; when it runs, this shows the last image it took."
+					: " No cameras connected."),
+			el("div", { class: "psc-live-grid" }, cameras.map(camera => el("figure", {},
+				el("img", { src: `/api/stream?index=${camera.index}&t=${Date.now()}`, alt: `Live view from ${camera.name}` }),
+				el("figcaption", { class: "psc-camera-caption" },
+					camera.robot_id ? code(`robot.cameras[${JSON.stringify(camera.robot_id)}]`) : camera.name,
+					camera.calibrated ? "" : " (not calibrated)"),
+			))),
+		);
+		liveBox.hidden = false;
+		if (titleText) titleText.textContent = " Live View";
+	}
+
+	if (cameraModal) new MutationObserver(updateLive).observe(cameraModal, { attributes: true, attributeFilter: ["class"] });
+	robot.listeners.push(updateLive);
+
 	function clearCameras() {
 		tiles.clear();
 		grid?.replaceChildren();

@@ -95,3 +95,13 @@
 #psc-calibration .tag .material-symbols-outlined,
 #psc-calibration .button .material-symbols-outlined { font-size: 18px; }
 #psc-calibration .tag .material-symbols-outlined { margin-right: 2px; }
+
+/* Live view in the camera dialog while robot code isn't running */
+.psc-live-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); gap: 14px; margin-bottom: 8px; }
+.psc-live-grid figure { margin: 0; }
+.psc-live-grid img { display: block; width: 100%; aspect-ratio: 16 / 9; object-fit: contain; background: #0d2438; border-radius: 4px; }
+.psc-live-note { display: flex; align-items: center; gap: 6px; margin: 0 0 10px; }
+#modal-camera.psc-live-on #last-annotated-image,
+#modal-camera.psc-live-on #no-annotated-image-instructions,
+#modal-camera.psc-live-on #psc-camera-grid,
+#modal-camera.psc-live-on .psc-camera-caption:not(#psc-live .psc-camera-caption) { display: none !important; }
