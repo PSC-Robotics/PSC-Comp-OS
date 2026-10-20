@@ -8,6 +8,7 @@ from types import ModuleType
 from typing import Callable, Optional
 
 from .logging import log_to_debug
+from .pin_motors import DCMotor, Stepper, register_driven_pins
 
 LOGGER = logging.getLogger(__name__)
 
@@ -18,10 +19,13 @@ RESERVED_PINS = {0: "HAT EEPROM", 1: "HAT EEPROM", 5: "the start button", 13: "t
                  14: "the serial port (bus servos)", 15: "the serial port (bus servos)",
                  17: "the status LED", 22: "the status LED", 27: "the status LED"}
 MIN_STEP_DELAY_US = 50
+DEFAULT_STEP_DELAY_US = 1000
 MAX_STEP_DELAY_US = 1_000_000
 MAX_STEPS = 1_000_000
 STEP_PULSE_US = 5  # comfortably above the 1-2us minimum of common drivers
 DIRECTION_SETUP_US = 5
+# Software PWM frequency for DC motor drivers. The DRV8871 accepts up to 200kHz.
+DC_MOTOR_PWM_HZ = 1000
 
 
 def _load_gpio() -> ModuleType:
@@ -38,13 +42,16 @@ class RaspberryPi:
     """
     Devices wired directly to the brain board's Raspberry Pi GPIO header.
 
-    Supports stepper motor drivers. Pins are given as BCM GPIO numbers
-    (e.g. 23 for GPIO 23, header pin 16), not header pin numbers.
+    Supports DC motor drivers (such as the DRV8871) and stepper motor drivers.
+    Pins are given as BCM GPIO numbers (e.g. 23 for GPIO 23, header pin 16),
+    not header pin numbers.
 
     :param gpio_loader: Returns the RPi.GPIO module; replaced in tests.
     :param clock_ns: A monotonic clock in nanoseconds; replaced in tests.
     """
-    __slots__ = ('_gpio', '_gpio_loader', '_clock_ns', '_pin_modes')
+    __slots__ = (
+        '_gpio', '_gpio_loader', '_clock_ns', '_pin_modes', '_pwms', '_motors', '_claims',
+    )
 
     def __init__(
         self,
@@ -55,6 +62,10 @@ class RaspberryPi:
         self._gpio_loader = gpio_loader
         self._clock_ns = clock_ns
         self._pin_modes: dict[int, str] = {}
+        self._pwms: dict[int, object] = {}
+        # Motors by kind and pins, and which motor uses each pin.
+        self._motors: dict[tuple, object] = {}
+        self._claims: dict[int, tuple] = {}
 
     def _load(self) -> ModuleType:
         if self._gpio is None:
@@ -72,6 +83,12 @@ class RaspberryPi:
         return gpio
 
     def _cleanup(self) -> None:
+        for pwm in self._pwms.values():
+            try:
+                pwm.stop()  # type: ignore[attr-defined]
+            except Exception:
+                LOGGER.debug("Failed to stop PWM", exc_info=True)
+        self._pwms.clear()
         if self._gpio is not None and self._pin_modes:
             self._gpio.cleanup(sorted(self._pin_modes))
             self._pin_modes.clear()
@@ -91,6 +108,87 @@ class RaspberryPi:
             time.sleep((remaining_ns - 1_000_000) / 1e9)
         while self._clock_ns() < deadline_ns:
             pass
+
+    def _claim(self, key: tuple, pins: tuple[int, ...], names: tuple[str, ...]) -> None:
+        for pin, name in zip(pins, names):
+            self._check_pin(pin, name)
+        if len(set(pins)) != len(pins):
+            raise ValueError(f"{' and '.join(names)} must be different")
+        for pin in pins:
+            owner = self._claims.get(pin)
+            if owner is not None and owner != key:
+                raise ValueError(f"GPIO {pin} is already used by another motor")
+        for pin in pins:
+            self._claims[pin] = key
+
+    def _set_duty(self, pin: int, duty: float) -> None:
+        gpio = self._setup_output(pin)
+        pwm = self._pwms.get(pin)
+        if pwm is None:
+            pwm = gpio.PWM(pin, DC_MOTOR_PWM_HZ)
+            pwm.start(0)
+            self._pwms[pin] = pwm
+        pwm.ChangeDutyCycle(duty * 100)  # type: ignore[attr-defined]
+
+    @log_to_debug
+    def dc_motor(self, in1_pin: int, in2_pin: int) -> DCMotor:
+        """
+        Get a DC motor connected through a two-input driver, such as a DRV8871.
+
+        Set its ``power`` from -1 to 1, or to ``BRAKE`` or ``COAST``. Asking for the
+        same pins again returns the same motor. The motor starts coasting, and is
+        stopped when your code ends.
+
+        :param in1_pin: BCM GPIO number connected to the driver's IN1 input.
+        :param in2_pin: BCM GPIO number connected to the driver's IN2 input.
+        :raises ValueError: If a pin is invalid, reserved or used by another motor.
+        :raises RuntimeError: If not running on the robot.
+        """
+        key = ('dc', in1_pin, in2_pin)
+        if key not in self._motors:
+            self._claim(key, (in1_pin, in2_pin), ('in1_pin', 'in2_pin'))
+            self._load()
+
+            def set_inputs(in1: float, in2: float) -> None:
+                self._set_duty(in1_pin, in1)
+                self._set_duty(in2_pin, in2)
+
+            self._motors[key] = DCMotor(set_inputs, f"IN1=GPIO {in1_pin} IN2=GPIO {in2_pin}")
+            register_driven_pins((in1_pin, in2_pin))
+        return self._motors[key]  # type: ignore[return-value]
+
+    @log_to_debug
+    def stepper(
+        self, step_pin: int, direction_pin: int, *, step_delay_us: Optional[int] = None,
+    ) -> Stepper:
+        """
+        Get a stepper motor connected through a step/direction driver, such as an A4988.
+
+        Move it with ``move(steps)``; it counts its ``position`` in steps. Asking for
+        the same pins again returns the same motor.
+
+        :param step_pin: BCM GPIO number connected to the driver's STEP input.
+        :param direction_pin: BCM GPIO number connected to the driver's DIR input.
+        :param step_delay_us: The time between steps, in microseconds (50 to 1000000),
+            when a move doesn't give one. Defaults to 1000 for a new motor.
+        :raises ValueError: If a pin is invalid, reserved or used by another motor.
+        """
+        key = ('stepper', step_pin, direction_pin)
+        if key not in self._motors:
+            self._claim(key, (step_pin, direction_pin), ('step_pin', 'direction_pin'))
+
+            def move_steps(steps: int, direction: bool, delay: int) -> None:
+                self._step(step_pin, direction_pin, steps, direction, delay)
+
+            self._motors[key] = Stepper(
+                move_steps, lambda _delay: MAX_STEPS, MIN_STEP_DELAY_US, MAX_STEP_DELAY_US,
+                DEFAULT_STEP_DELAY_US, f"STEP=GPIO {step_pin} DIR=GPIO {direction_pin}",
+            )
+        motor = self._motors[key]
+        assert isinstance(motor, Stepper)
+        if step_delay_us is not None:
+            motor.step_delay_us = step_delay_us
+        return motor
 
     @log_to_debug
     def stepper_move(
@@ -140,6 +238,16 @@ class RaspberryPi:
                 f"to {MAX_STEP_DELAY_US}"
             )
 
+        for pin in (step_pin, direction_pin):
+            owner = self._claims.get(pin)
+            if owner is not None and owner[0] != 'stepper':
+                raise ValueError(f"GPIO {pin} is already used by another motor")
+        self._step(step_pin, direction_pin, steps, direction, step_delay_us)
+
+    def _step(
+        self, step_pin: int, direction_pin: int, steps: int, direction: bool,
+        step_delay_us: int,
+    ) -> None:
         gpio = self._setup_output(step_pin)
         self._setup_output(direction_pin)
 

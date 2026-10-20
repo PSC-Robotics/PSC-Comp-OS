@@ -10,7 +10,7 @@ from socket import socket
 from types import MappingProxyType
 from typing import Mapping, Optional, final
 
-from . import game_specific, timeout
+from . import game_specific, pin_motors, timeout
 from ._version import __version__
 from .arduino import Arduino
 from .astoria import Metadata, RobotMode, init_astoria_mqtt
@@ -91,6 +91,9 @@ class Robot(metaclass=FinalMeta):
             self._astoria = None
         else:
             self._mqtt, self._astoria = init_astoria_mqtt()
+            mqtt = self._mqtt
+            pin_motors.set_announcer(
+                lambda pins: mqtt.wrapped_publish(pin_motors.MOTOR_PINS_TOPIC, pins, True))
 
         if manual_boards:
             self._init_power_board(manual_boards.get(PowerBoard.get_board_type(), []))

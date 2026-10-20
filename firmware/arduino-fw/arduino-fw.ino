@@ -14,7 +14,7 @@
 // We communicate with the Arduino at 115200 baud.
 #define SERIAL_BAUD 115200
 
-#define FW_VER 5
+#define FW_VER 6
 
 // The voltage that analogRead's full scale represents, in millivolts.
 #if defined(ARDUINO_ARCH_SAM) || defined(ARDUINO_ARCH_SAMD) || defined(ARDUINO_ARCH_MBED) || defined(ARDUINO_ARCH_RP2040)
@@ -136,6 +136,39 @@ void command_stepper_move() {
   Serial.print("OK");
 }
 
+void command_pwm_write() {
+  // Set a pin's PWM duty cycle, from 0 (always low) to 255 (always high), for
+  // DC motor drivers such as the DRV8871 (version 6 and later).
+  while (!Serial.available());
+  int logical = Serial.read() - 'a';
+  long duty = read_fixed_number(3);
+
+  if (logical < 2 || logical > 19 || duty < 0 || duty > 255) {
+    Serial.print("NACK:Invalid PWM parameters");
+    return;
+  }
+
+  int pin = board_pin(logical);
+#ifdef digitalPinHasPWM
+  if (duty != 0 && duty != 255 && !digitalPinHasPWM(pin)) {
+    Serial.print("NACK:Pin ");
+    Serial.print(logical);
+    Serial.print(" does not support PWM");
+    return;
+  }
+#endif
+
+  pinMode(pin, OUTPUT);
+  if (duty == 0) {
+    digitalWrite(pin, LOW);  // Also turns off any PWM on the pin
+  } else if (duty == 255) {
+    digitalWrite(pin, HIGH);
+  } else {
+    analogWrite(pin, (int)duty);
+  }
+  Serial.print("OK");
+}
+
 long microsecondsToMm(long microseconds) {
   // The speed of sound is 340 m/s or 29 microseconds per centimeter.
   // The ping travels out and back, so to find the distance we need half
@@ -175,6 +208,9 @@ void loop() {
         break;
       case 's':
         command_stepper_move();
+        break;
+      case 'w':
+        command_pwm_write();
         break;
       case 'v':
         Serial.print("SRcustom:");
