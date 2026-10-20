@@ -18,6 +18,9 @@ Sounds (defaults; each can be changed in /etc/psc-status.toml):
     Start pressed      three rising notes
     Code crashed       fast short beeps
 
+It also stops DC motors that robot code drove from the Pi's pins when the code
+stops, in case the code was killed before it could stop them itself.
+
 Pins, LED polarity, buzzer type, volume and sounds are set in
 /etc/psc-status.toml.
 """
@@ -38,6 +41,8 @@ ASTPROCD_TOPIC = "astoria/astprocd"
 ROBOT_STATE_TOPIC = "psc/robot/state"
 START_BUTTON_TOPIC = "astoria/broadcast/start_button"
 BUZZER_TOPIC = "psc/buzzer"
+MOTORS_TOPIC = "psc/motors"
+CODE_ACTIVE = ("code_starting", "code_running")
 
 OFF = (False, False, False)
 RED = (True, False, False)
@@ -114,6 +119,11 @@ class RobotStatus:
                 if state == "started" and was_waiting:
                     return self.sounds["start"]
         return None
+
+    @property
+    def code_active(self) -> bool:
+        with self._lock:
+            return self.code_status in CODE_ACTIVE
 
     def set_connected(self, connected: bool) -> None:
         with self._lock:
@@ -256,6 +266,46 @@ def parse_sound(steps, name: str) -> Sound:
     return sound
 
 
+class MotorGuard:
+    """Stop the DC motors robot code drove from the Pi's pins, when the code stops.
+
+    The robot library publishes the pins to psc/motors. Its own exit handlers stop
+    the motors, but they can't run if the code is killed outright (SIGKILL), and the
+    pins would then keep whatever level they had.
+    """
+
+    def __init__(self, gpio, own_pins: set[int]) -> None:
+        self._gpio = gpio
+        self._own_pins = own_pins
+        self._lock = threading.Lock()
+        self._pins: list[int] = []
+
+    def update(self, payload: bytes) -> None:
+        try:
+            pins = json.loads(json.loads(payload)["data"])["pi"]
+        except (ValueError, KeyError, TypeError):
+            return
+        if not isinstance(pins, list):
+            return
+        with self._lock:
+            self._pins = [
+                pin for pin in pins
+                if isinstance(pin, int) and 2 <= pin <= 27 and pin not in self._own_pins
+            ]
+
+    def stop(self) -> None:
+        with self._lock:
+            pins = list(self._pins)
+        for pin in pins:
+            try:
+                # An input with a pull-down: the DRV8871's inputs read low, so it coasts.
+                self._gpio.setup(pin, self._gpio.IN, pull_up_down=self._gpio.PUD_DOWN)
+            except Exception as error:
+                print(f"Failed to stop the motor on GPIO {pin}: {error}", flush=True)
+        if pins:
+            print(f"Stopped DC motors on GPIO {pins}", flush=True)
+
+
 def start_event() -> str:
     return json.dumps({"event_name": "start_button", "sender_name": "psc-statusd", "priority": 0})
 
@@ -280,6 +330,7 @@ def main() -> None:
     buzzer_config = config["buzzer"]
     buzzer = BuzzerPlayer(GPIO, buzzer_config.get("pin", 13),
                           passive=buzzer_config.get("type", "passive") == "passive")
+    motors = MotorGuard(GPIO, {*pins, button["pin"], buzzer_config.get("pin", 13)})
 
     client = mqtt.Client(mqtt.CallbackAPIVersion.VERSION2, client_id="psc-statusd")
     client.reconnect_delay_set(min_delay=1, max_delay=5)
@@ -288,7 +339,8 @@ def main() -> None:
         if reason_code.is_failure:
             return
         status.set_connected(True)
-        client.subscribe([(ASTPROCD_TOPIC, 0), (ROBOT_STATE_TOPIC, 0), (BUZZER_TOPIC, 0)])
+        client.subscribe([(ASTPROCD_TOPIC, 0), (ROBOT_STATE_TOPIC, 0), (BUZZER_TOPIC, 0),
+                          (MOTORS_TOPIC, 0)])
 
     def on_disconnect(client, userdata, flags, reason_code, properties=None):
         status.set_connected(False)
@@ -296,10 +348,16 @@ def main() -> None:
     client.on_connect = on_connect
     client.on_disconnect = on_disconnect
     def on_message(client, userdata, msg):
+        if msg.topic == MOTORS_TOPIC:
+            motors.update(msg.payload)
+            return
         if msg.topic == BUZZER_TOPIC:
             sound = buzz_request(msg.payload, buzzer_config["code_volume"])
         else:
+            was_active = status.code_active
             sound = status.handle(msg.topic, msg.payload)
+            if was_active and not status.code_active:
+                motors.stop()
         if sound is not None:
             buzzer.play(sound)
 
