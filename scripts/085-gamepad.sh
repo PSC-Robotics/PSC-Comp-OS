@@ -32,6 +32,11 @@ set_option /etc/bluetooth/main.conf General JustWorksRepairing always
 set_option /etc/bluetooth/main.conf Policy AutoEnable true
 set_option /etc/bluetooth/main.conf Policy ReconnectAttempts 7
 set_option /etc/bluetooth/main.conf Policy ReconnectIntervals 1,2,4,8,16,32,64
+# LE links (Xbox, Stadia and other BLE controllers) are dropped if no packet gets
+# through for this long. The default 420ms is too short next to the robot's Wi-Fi
+# hotspot on the same radio; 2s rides out short dropouts but still stops the robot
+# soon after a controller really goes (units of 10ms).
+set_option /etc/bluetooth/main.conf Controller LEConnectionSupervisionTimeout 200
 # Some controllers connect without bonding. psc-gamepadd's agent still only lets
 # in controllers that were paired from the web interface.
 set_option /etc/bluetooth/input.conf General ClassicBondedOnly false

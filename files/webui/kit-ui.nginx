@@ -16,6 +16,12 @@ server {
         try_files $uri $uri/ =404;
     }
 
+    # The PSC additions change with each OS update: make browsers check for a new copy.
+    location ~ ^/psc-ui\.(js|css)$ {
+        add_header Cache-Control "no-cache";
+        try_files $uri =404;
+    }
+
     location = /calibrate {
         try_files /calibrate.html =404;
     }

@@ -89,6 +89,25 @@ def is_gamepad_like(device: dict) -> bool:
     return bool(GAMEPAD_NAMES.search(device.get("Alias") or device.get("Name") or ""))
 
 
+# Bluetooth company IDs, for naming controllers that don't send a name. Xbox controllers
+# put their name in a scan response, which doesn't always arrive.
+COMPANY_NAMES = {0x0006: "Xbox Wireless Controller", 0x054C: "PlayStation controller",
+                 0x0553: "Nintendo controller", 0x00E0: "Google controller"}
+
+
+def display_name(device: dict, address: str) -> str:
+    """The device's name, or a name from its maker if it is a gamepad that sent none."""
+    name = device.get("Name") or device.get("Alias") or ""
+    if name and name.replace("-", ":").upper() != address:
+        return name
+    if is_gamepad_like(device):
+        for company in device.get("ManufacturerData") or {}:
+            if company in COMPANY_NAMES:
+                return COMPANY_NAMES[company]
+        return "Game controller"
+    return address
+
+
 def competition_bluetooth_enabled(mount_paths: list[str]) -> tuple[bool, str]:
     """Read "bluetooth_enabled" from any competition (metadata) USB that is plugged in."""
     try:
@@ -422,16 +441,17 @@ class GamepadService:
             paired = bool(device.get("Paired"))
             if not paired and device.get("RSSI") is None and address not in jobs:
                 continue  # Not seen in this search
-            name = device.get("Alias") or device.get("Name") or address
-            if not paired and name.replace("-", ":").upper() == address and address not in jobs:
-                continue  # Nameless devices are almost never controllers
+            name = display_name(device, address)
+            if not paired and name == address and address not in jobs:
+                continue  # Nameless devices that aren't gamepads are almost never controllers
             listed.append({
                 "address": address, "name": name, "paired": paired,
                 "trusted": bool(device.get("Trusted")), "connected": bool(device.get("Connected")),
                 "gamepad": is_gamepad_like(device), "rssi": device.get("RSSI"),
                 "job": jobs.get(address),
             })
-        listed.sort(key=lambda d: (not d["paired"], not d["gamepad"], -(d["rssi"] or -999), d["name"].lower()))
+        # Not by signal strength: it changes every second, which would reorder the list.
+        listed.sort(key=lambda d: (not d["paired"], not d["gamepad"], d["name"].lower(), d["address"]))
         return {
             "bluetooth": {
                 "present": adapter is not None, "powered": bool(props.get("Powered")),

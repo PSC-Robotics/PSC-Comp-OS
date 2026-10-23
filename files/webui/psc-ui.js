@@ -94,7 +94,9 @@
 		const needing = summary.filter(camera => !camera.calibrated && camera.robot_id);
 		dot.hidden = needing.length === 0;
 		const shown = needing.filter(camera => store.session(dismissedKey(camera)) !== "1");
-		if (!shown.length || calibration.modal.classList.contains("is-active")) { banner.hidden = true; return; }
+		const dialogOpen = calibration.modal.classList.contains("is-active")
+			|| document.getElementById("psc-gamepads")?.classList.contains("is-active");
+		if (!shown.length || dialogOpen) { banner.hidden = true; return; }
 		const names = shown.map(camera => camera.name);
 		banner.replaceChildren(
 			el("button", { class: "delete", "aria-label": "Dismiss", onclick: () => {
@@ -762,7 +764,11 @@
 		guide: "Home", left_stick_button: "LS", right_stick_button: "RS",
 		dpad_up: "Up", dpad_down: "Down", dpad_left: "Left", dpad_right: "Right",
 	};
-	const pads = { status: null, input: [], error: null, inputTimer: null, statusTimer: null, howToOpen: false };
+	const pads = { status: null, input: [], error: null, inputTimer: null, statusTimer: null };
+	// Built once and reused, so redrawing the dialog can't close it while it's being read.
+	const pairingHelp = el("details", { class: "psc-history" },
+		el("summary", {}, "How to do this for your controller"),
+		el("dl", { class: "psc-pairing" }, PAIRING_STEPS.flatMap(([name, text]) => [el("dt", {}, name), el("dd", {}, text)])));
 	const padDot = el("span", { class: "psc-dot is-connected", hidden: true });
 	const padButton = el("span", {
 		class: "button psc-cal-button", tabindex: "0", role: "button", title: "Gamepads",
@@ -785,11 +791,12 @@
 	);
 	document.body.append(pads.modal);
 	const padsOpen = () => pads.modal.classList.contains("is-active");
-	new MutationObserver(() => { if (!padsOpen()) stopGamepadPolling(); })
+	new MutationObserver(() => { if (!padsOpen()) { stopGamepadPolling(); renderBanner(); } })
 		.observe(pads.modal, { attributes: true, attributeFilter: ["class"] });
 
 	function openGamepads() {
 		pads.modal.classList.add("is-active");
+		banner.hidden = true;
 		pads.shown = null;
 		renderGamepads();
 		refreshGamepads();
@@ -822,7 +829,7 @@
 		// Only redraw when something shown has changed: redrawing replaces the buttons,
 		// and a click that lands during a redraw would be lost. Live input is drawn
 		// separately, by updateInputViews.
-		const shown = JSON.stringify([pads.error, pads.howToOpen, pads.status && {
+		const shown = JSON.stringify([pads.error, pads.status && {
 			...pads.status, gamepads: pads.input.map(pad => [pad.player, pad.name, pad.address]),
 			devices: pads.status.devices.map(({ rssi, job, ...device }) => ({ ...device, job: job && [job.state, job.message] })),
 		}]);
@@ -959,9 +966,7 @@
 		parts.push(el("h3", { class: "title is-6" }, "Pair a controller"));
 		parts.push(el("ol", { class: "psc-checklist" },
 			el("li", {}, el("div", {}, el("strong", {}, "Put the controller in pairing mode."),
-				el("details", { class: "psc-history", open: pads.howToOpen, ontoggle: event => { pads.howToOpen = event.target.open; } },
-					el("summary", {}, "How to do this for your controller"),
-					el("dl", { class: "psc-pairing" }, PAIRING_STEPS.map(([name, text]) => [el("dt", {}, name), el("dd", {}, text)]))))),
+				pairingHelp)),
 			el("li", {}, el("div", {}, el("strong", {}, "Search, then pair it."),
 				el("div", { class: "buttons" },
 					el("button", { class: `button is-link${searching ? " is-loading" : ""}`, disabled: !bluetooth.powered || status.competition_blocked,
