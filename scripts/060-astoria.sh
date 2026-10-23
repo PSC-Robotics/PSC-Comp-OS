@@ -26,6 +26,13 @@ chmod 644 /etc/polkit-1/rules.d/50-udiskie.rules /etc/polkit-1/localauthority/50
 mv /tmp/packer/astoria/udiskie/astoria-udiskie.yml /etc/
 chmod 644 /etc/astoria-udiskie.yml
 
+# Run the hotspot on 5GHz on boards that support it, leaving 2.4GHz to Bluetooth
+# gamepads (see patch_astwifid.py; Astoria fixes the hotspot to 2.4GHz channel 6).
+python_bin="$(echo /home/$(id -un 1000)/.pyenv/versions/*/bin/python)"
+astwifid_py="$("$python_bin" -c 'import astoria.astwifid as m; print(m.__file__)')"
+"$python_bin" /tmp/packer/astoria/patch_astwifid.py "$astwifid_py"
+grep -q "_hotspot_band" "$astwifid_py"
+
 # astoria configs
 mv /tmp/packer/astoria/astoria.toml /etc/
 sed -i "s/%SROBO_VERSION%/${SROBO_NAME} ${SROBO_VERSION}/" /etc/astoria.toml
