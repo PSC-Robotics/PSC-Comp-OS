@@ -42,6 +42,11 @@ AGENT_PATH = "/uk/psc_robotics/agent"
 ASTDISKD_TOPIC = "astoria/astdiskd"
 SCAN_SECONDS = 45
 REFRESH_SECONDS = 1.5
+PAIR_ATTEMPTS = 5
+# Pairing errors worth trying again: the radio link didn't come up (another device
+# connected to the controller first, or radio interference), or BlueZ lost the device.
+RETRY_ERRORS = ("ConnectionAttemptFailed", "AuthenticationTimeout", "UnknownObject", "Failed",
+                "NoReply", "InProgress")
 ADAPTER_MISSING_RESTART_S = 20
 MAX_HCIUART_RESTARTS = 3
 GAMEPAD_NAMES = re.compile(
@@ -332,31 +337,61 @@ class GamepadService:
         with self.lock:
             self.jobs[address] = {"state": state, "message": message, "time": time.time()}
 
+    async def find(self, address: str, wait: float = 0) -> dict | None:
+        """BlueZ's current record of a device, searching for up to ``wait`` seconds if needed."""
+        await self.refresh()
+        deadline = time.monotonic() + wait
+        while address not in self.devices and time.monotonic() < deadline:
+            await self.set_scan(True)
+            await asyncio.sleep(1)
+            await self.refresh()
+        return self.devices.get(address)
+
+    async def pair_with_retries(self, address: str) -> tuple[str | None, str]:
+        """Pair, retrying while the controller is in pairing mode. Returns (path, error)."""
+        error = ""
+        for attempt in range(1, PAIR_ATTEMPTS + 1):
+            device = await self.find(address, wait=8)
+            if device is None:
+                return None, "The controller isn't in range or in pairing mode any more."
+            if device.get("Paired"):
+                return device["path"], ""
+            if attempt > 1:
+                self.set_job(address, "pairing", f"Pairing... (try {attempt} of {PAIR_ATTEMPTS})")
+            # Searching while connecting makes connections less reliable on the Pi's radio.
+            await self.set_scan(False)
+            try:
+                await self.call(device["path"], "org.bluez.Device1", "Pair", timeout=30)
+                return device["path"], ""
+            except DBusError as failure:
+                if "AlreadyExists" in str(failure.type):
+                    return device["path"], ""
+                error = short(failure)
+                LOGGER.warning(f"Pairing {address} (try {attempt}) failed: {failure.type} {failure.text}")
+                if not any(word in str(failure.type) for word in RETRY_ERRORS):
+                    break
+            except asyncio.TimeoutError:
+                error = "the controller didn't answer"
+                LOGGER.warning(f"Pairing {address} (try {attempt}) timed out")
+            await asyncio.sleep(1)
+        return None, error
+
     async def pair(self, address: str) -> None:
         with self.lock:
-            device = self.devices.get(address)
             self.pairing.add(address)
         try:
+            device = await self.find(address)
             if device is None:
                 self.set_job(address, "failed", "The controller isn't in range any more. Search again.")
                 return
-            path, was_paired = device["path"], bool(device.get("Paired"))
             self.set_job(address, "pairing", "Pairing...")
-            # Searching while pairing makes connections less reliable on the Pi's radio.
-            await self.set_scan(False)
-            if not was_paired:
-                try:
-                    await self.call(path, "org.bluez.Device1", "Pair", timeout=60)
-                except DBusError as error:
-                    if "AlreadyExists" not in str(error.type):
-                        LOGGER.warning(f"Pairing {address} failed: {error.type} {error.text}")
-                        await self.remove(path)
-                        self.set_job(address, "failed", f"Pairing failed ({short(error)}). {BAD_PAIRING_HINT}")
-                        return
-                except asyncio.TimeoutError:
-                    await self.remove(path)
-                    self.set_job(address, "failed", f"The controller didn't answer. {BAD_PAIRING_HINT}")
-                    return
+            path, error = await self.pair_with_retries(address)
+            if path is None:
+                stale = self.devices.get(address)
+                if stale is not None:
+                    await self.remove(stale["path"])
+                self.set_job(address, "failed", f"Pairing failed ({error}). {BAD_PAIRING_HINT}")
+                return
             await self.set_property(path, "org.bluez.Device1", "Trusted", "b", True)
             self.set_job(address, "connecting", "Connecting...")
             if await self.connect(path, address):
@@ -438,7 +473,8 @@ class GamepadService:
             jobs = {address: dict(job) for address, job in self.jobs.items() if time.time() - job["time"] < 300}
         listed = []
         for address, device in devices.items():
-            paired = bool(device.get("Paired"))
+            # A connected controller is always listed, so it can be disconnected or forgotten.
+            paired = bool(device.get("Paired")) or bool(device.get("Connected"))
             if not paired and device.get("RSSI") is None and address not in jobs:
                 continue  # Not seen in this search
             name = display_name(device, address)

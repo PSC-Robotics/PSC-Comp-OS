@@ -63,7 +63,10 @@
 		return { ok: response.ok, status: response.status, data };
 	}
 
-	const stylesheet = el("link", { rel: "stylesheet", href: "/psc-ui.css" });
+	// Load the stylesheet with the same version as this script (?v=...), so an OS update
+	// gets the new one rather than a copy the browser cached.
+	const version = new URL(document.currentScript?.src || location.href).search;
+	const stylesheet = el("link", { rel: "stylesheet", href: `/psc-ui.css${version}` });
 	document.head.append(stylesheet);
 
 	// ---------------------------------------------------------------- robot state (MQTT)

@@ -26,8 +26,10 @@ mv /tmp/webui/dist/* /usr/share/kit-ui/
 install -o root -g root -m 644 /tmp/packer/webui/calibrate.html /usr/share/kit-ui/calibrate.html
 install -o root -g root -m 644 /tmp/packer/webui/psc-ui.js /usr/share/kit-ui/psc-ui.js
 install -o root -g root -m 644 /tmp/packer/webui/psc-ui.css /usr/share/kit-ui/psc-ui.css
-sed -i 's|</body>|<script src="/psc-ui.js" defer></script></body>|' /usr/share/kit-ui/index.html
-grep -q 'psc-ui.js' /usr/share/kit-ui/index.html
+# The version in the address makes browsers load the new script after an OS update.
+UI_VERSION="$(echo "${SROBO_VERSION:-local}" | tr -c 'A-Za-z0-9.\n-' '-')"
+sed -i "s|</body>|<script src=\"/psc-ui.js?v=${UI_VERSION}\" defer></script></body>|" /usr/share/kit-ui/index.html
+grep -q "psc-ui.js?v=${UI_VERSION}" /usr/share/kit-ui/index.html
 
 chown -R root:www-data /usr/share/kit-ui
 chmod -R 755 /usr/share/kit-ui

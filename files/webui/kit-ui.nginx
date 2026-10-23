@@ -10,16 +10,14 @@ server {
 
     server_name _;
 
+    # The interface changes with each OS update: make browsers check for a new copy
+    # every time (unchanged files are still answered with a quick "not modified").
+    add_header Cache-Control "no-cache";
+
     location / {
         # First attempt to serve request as file, then
         # as directory, then fall back to displaying a 404.
         try_files $uri $uri/ =404;
-    }
-
-    # The PSC additions change with each OS update: make browsers check for a new copy.
-    location ~ ^/psc-ui\.(js|css)$ {
-        add_header Cache-Control "no-cache";
-        try_files $uri =404;
     }
 
     location = /calibrate {
