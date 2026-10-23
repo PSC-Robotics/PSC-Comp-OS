@@ -18,6 +18,7 @@ from .bus_servo import BusServoAdapter
 from .buzzer import Buzzer
 from .camera import AprilCamera, _setup_cameras
 from .exceptions import MetadataNotReadyError
+from .gamepad import Gamepad, GamepadManager
 from .kch import KCH
 from .logging import log_to_debug, setup_logging
 from .motor_board import MotorBoard
@@ -56,6 +57,7 @@ class Robot(metaclass=FinalMeta):
         '_lock', '_metadata', '_power_board', '_motor_boards', '_servo_boards',
         '_arduinos', '_cameras', '_mqtt', '_astoria', '_kch', '_raw_ports',
         '_time_server', '_no_powerboard', '_buzzer', '_raspberry_pi', '_bus_servo_adapters',
+        '_gamepads',
     )
 
     def __init__(
@@ -160,6 +162,7 @@ class Robot(metaclass=FinalMeta):
         self._kch = KCH()
         self._buzzer = Buzzer(self._mqtt, self.sleep)
         self._raspberry_pi = RaspberryPi()
+        self._gamepads = GamepadManager()
         self._motor_boards = MotorBoard._get_supported_boards(manual_motorboards)
         self._servo_boards = ServoBoard._get_supported_boards(manual_servoboards)
         self._arduinos = Arduino._get_supported_boards(manual_arduinos, ignored_arduinos)
@@ -259,6 +262,59 @@ class Robot(metaclass=FinalMeta):
         :returns: The RaspberryPi object
         """
         return self._raspberry_pi
+
+    @property
+    def gamepad(self) -> Gamepad:
+        """
+        Access the first player's gamepad, connected over Bluetooth or USB.
+
+        This always returns the same object. Check ``connected``, or use
+        ``wait_for_gamepad``, to know whether a controller is connected.
+
+        :returns: The first Gamepad object
+        """
+        return self._gamepads.gamepads[0]
+
+    @property
+    def gamepads(self) -> tuple[Gamepad, ...]:
+        """
+        Access every player's gamepad, in the order the controllers connected.
+
+        :returns: A tuple of Gamepad objects, one for each player
+        """
+        return self._gamepads.gamepads
+
+    @log_to_debug
+    def wait_for_gamepad(self, timeout: Optional[float] = None, *, player: int = 1) -> bool:
+        """
+        Wait until a gamepad is connected.
+
+        Pair gamepads from the robot's web interface. A message is printed every ten
+        seconds while waiting.
+
+        :param timeout: The longest time to wait, in seconds. Waits forever if None.
+        :param player: Which player's gamepad to wait for, from 1.
+        :returns: Whether a gamepad is connected.
+        """
+        if (
+            isinstance(player, bool) or not isinstance(player, int)
+            or not 1 <= player <= len(self._gamepads.gamepads)
+        ):
+            raise ValueError(f"player must be from 1 to {len(self._gamepads.gamepads)}")
+        gamepad = self._gamepads.gamepads[player - 1]
+        deadline = None if timeout is None else time.monotonic() + timeout
+        while not gamepad.connected:
+            logger.info(
+                f"Waiting for a gamepad (player {player}). "
+                "Pair one from the Gamepads button in the web interface."
+            )
+            remaining = None if deadline is None else deadline - time.monotonic()
+            if remaining is not None and remaining <= 0:
+                return False
+            if gamepad.wait_until_connected(10 if remaining is None else min(10, remaining)):
+                break
+        logger.info(f"Gamepad connected (player {player}): {gamepad.name}")
+        return True
 
     @property
     def kch(self) -> KCH:
