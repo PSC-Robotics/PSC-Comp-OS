@@ -9,7 +9,7 @@ useradd \
     --create-home \
     -s /bin/bash \
     -u 1000 \
-    -G sudo,video,dialout,adm,gpio \
+    -G sudo,video,dialout,adm,gpio,input \
     $user
 
 # Set the known default credential explicitly so Raspberry Pi OS accepts it.

@@ -105,3 +105,37 @@
 #modal-camera.psc-live-on #no-annotated-image-instructions,
 #modal-camera.psc-live-on #psc-camera-grid,
 #modal-camera.psc-live-on .psc-camera-caption:not(#psc-live .psc-camera-caption) { display: none !important; }
+
+/* Gamepads dialog */
+.psc-dot.is-connected { background: var(--bulma-success); }
+#psc-gamepads .modal-card { width: min(820px, calc(100vw - 24px)); max-height: calc(100vh - 24px); }
+#psc-gamepads .modal-card-title { display: flex; align-items: center; gap: 8px; }
+#psc-gamepads .modal-card-foot { justify-content: flex-end; }
+#psc-gamepads h3.title { margin: 20px 0 10px; }
+#psc-gamepads h3.title:first-child { margin-top: 0; }
+#psc-gamepads .tag .material-symbols-outlined,
+#psc-gamepads .button .material-symbols-outlined { font-size: 18px; margin-right: 2px; }
+#psc-gamepads .psc-camera-row .buttons { margin: 0; flex-wrap: nowrap; }
+#psc-gamepads details { margin-top: 6px; }
+.psc-muted { color: var(--bulma-text-weak); }
+.psc-pad-code { margin-top: 18px; font-size: 14px; }
+.psc-pairing dt { font-weight: 600; margin-top: 8px; }
+.psc-pairing dd { margin: 2px 0 0; }
+.psc-pad-list { display: grid; gap: 10px; }
+.psc-pad { padding: 14px; border: 1px solid var(--bulma-border-weak); border-radius: 8px; }
+.psc-pad-head { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; margin-bottom: 10px; }
+.psc-pad-controls { display: flex; align-items: center; gap: 18px; flex-wrap: wrap; }
+.psc-pad-controls figure { margin: 0; text-align: center; font-size: 12px; color: var(--bulma-text-weak); }
+.psc-stick {
+	position: relative; display: block; width: 72px; height: 72px; border-radius: 50%;
+	background: var(--bulma-background); border: 1px solid var(--bulma-border);
+}
+.psc-stick-dot {
+	position: absolute; width: 14px; height: 14px; margin: -7px 0 0 -7px; border-radius: 50%;
+	background: var(--bulma-link);
+}
+.psc-triggers { display: grid; gap: 8px; min-width: 140px; font-size: 13px; }
+.psc-triggers label { display: grid; grid-template-columns: 24px 1fr; align-items: center; gap: 6px; }
+.psc-bar { display: block; height: 8px; border-radius: 4px; background: var(--bulma-background); overflow: hidden; }
+.psc-bar-fill { display: block; height: 100%; background: var(--bulma-link); }
+.psc-pad-buttons { display: flex; gap: 4px; flex-wrap: wrap; margin-top: 12px; }

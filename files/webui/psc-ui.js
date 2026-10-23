@@ -2,6 +2,7 @@
 //  - camera calibration in a dialog on the main page (toolbar button, or /#calibrate)
 //  - a banner when a connected camera isn't calibrated
 //  - the latest image from every robot camera in kit-ui's camera view
+//  - pairing Bluetooth gamepads, and testing connected gamepads (toolbar button, or /#gamepads)
 (() => {
 	"use strict";
 
@@ -747,6 +748,234 @@
 		};
 	}
 
+	// ---------------------------------------------------------------- gamepads dialog
+	const PAIRING_STEPS = [
+		["Xbox Wireless Controller", "Turn it on with the Xbox button, then hold the small pair button on the top (next to the USB port) until the Xbox button flashes quickly."],
+		["PlayStation 4 (DualShock 4)", "Hold Share and the PS button together until the light bar flashes twice, again and again."],
+		["PlayStation 5 (DualSense)", "Hold Create and the PS button together until the lights around the touchpad flash."],
+		["Google Stadia", "It must already be switched to Bluetooth mode (a one-off step using Google's Stadia Bluetooth tool). Then hold the Stadia button and Y for 2 seconds, until the light flashes orange."],
+		["Nintendo Switch Pro Controller", "Hold the small sync button on the top until the player lights move back and forth."],
+		["8BitDo and other controllers", "Most enter pairing mode by holding their pair button for about 3 seconds. Check the controller's manual."],
+	];
+	const BUTTON_LABELS = {
+		a: "A", b: "B", x: "X", y: "Y", left_bumper: "LB", right_bumper: "RB", back: "Back", start: "Start",
+		guide: "Home", left_stick_button: "LS", right_stick_button: "RS",
+		dpad_up: "Up", dpad_down: "Down", dpad_left: "Left", dpad_right: "Right",
+	};
+	const pads = { status: null, input: [], error: null, inputTimer: null, statusTimer: null, howToOpen: false };
+	const padDot = el("span", { class: "psc-dot is-connected", hidden: true });
+	const padButton = el("span", {
+		class: "button psc-cal-button", tabindex: "0", role: "button", title: "Gamepads",
+		"aria-label": "Gamepads", onclick: () => openGamepads(),
+		onkeydown: event => { if (event.key === "Enter" || event.key === " ") { event.preventDefault(); openGamepads(); } },
+	}, el("span", { class: "icon has-text-link" }, icon("sports_esports")), padDot);
+	if (toolbar) toolbar.prepend(el("div", { class: "control" }, padButton));
+
+	pads.body = el("section", { class: "modal-card-body" });
+	pads.modal = el("div", { class: "modal", id: "psc-gamepads", role: "dialog", "aria-modal": "true", "aria-labelledby": "psc-pad-title" },
+		el("div", { class: "modal-background", onclick: () => closeGamepads() }),
+		el("div", { class: "modal-card" },
+			el("header", { class: "modal-card-head" },
+				el("p", { class: "modal-card-title", id: "psc-pad-title" }, icon("sports_esports"), "Gamepads"),
+				el("button", { class: "delete", "aria-label": "Close", onclick: () => closeGamepads() }),
+			),
+			pads.body,
+			el("footer", { class: "modal-card-foot" }, el("button", { class: "button", onclick: () => closeGamepads() }, "Close")),
+		),
+	);
+	document.body.append(pads.modal);
+	const padsOpen = () => pads.modal.classList.contains("is-active");
+	new MutationObserver(() => { if (!padsOpen()) stopGamepadPolling(); })
+		.observe(pads.modal, { attributes: true, attributeFilter: ["class"] });
+
+	function openGamepads() {
+		pads.modal.classList.add("is-active");
+		pads.shown = null;
+		renderGamepads();
+		refreshGamepads();
+		clearInterval(pads.statusTimer);
+		pads.statusTimer = setInterval(refreshGamepads, 1000);
+		clearInterval(pads.inputTimer);
+		pads.inputTimer = setInterval(refreshInput, 100);
+	}
+
+	function closeGamepads() {
+		pads.modal.classList.remove("is-active");
+		if (location.hash === "#gamepads") history.replaceState(null, "", location.pathname);
+	}
+
+	function stopGamepadPolling() {
+		clearInterval(pads.statusTimer);
+		clearInterval(pads.inputTimer);
+		pads.statusTimer = pads.inputTimer = null;
+	}
+
+	async function refreshGamepads() {
+		const { ok, data } = await api("/gamepad-api/status").catch(() => ({ ok: false, data: {} }));
+		pads.error = ok ? null : "The gamepad service isn't responding. Check that psc-gamepadd is running.";
+		if (ok) {
+			pads.status = data;
+			pads.input = data.gamepads || [];
+		}
+		padDot.hidden = !(pads.input.length);
+		if (!padsOpen()) return;
+		// Only redraw when something shown has changed: redrawing replaces the buttons,
+		// and a click that lands during a redraw would be lost. Live input is drawn
+		// separately, by updateInputViews.
+		const shown = JSON.stringify([pads.error, pads.howToOpen, pads.status && {
+			...pads.status, gamepads: pads.input.map(pad => [pad.player, pad.name, pad.address]),
+			devices: pads.status.devices.map(({ rssi, job, ...device }) => ({ ...device, job: job && [job.state, job.message] })),
+		}]);
+		if (shown === pads.shown) return;
+		pads.shown = shown;
+		renderGamepads();
+	}
+
+	let inputBusy = false;
+	async function refreshInput() {
+		if (inputBusy || !pads.input.length) return;
+		inputBusy = true;
+		const { ok, data } = await api("/gamepad-api/input").catch(() => ({ ok: false }));
+		inputBusy = false;
+		if (!ok || !padsOpen()) return;
+		pads.input = data.gamepads || [];
+		updateInputViews();
+	}
+
+	async function padAction(path, body, failure) {
+		const { ok, data } = await api(`/gamepad-api/${path}`, body).catch(() => ({ ok: false, data: {} }));
+		if (!ok) pads.error = data.error || failure;
+		await refreshGamepads();
+	}
+
+	function stick(x, y) {
+		const dot = el("span", { class: "psc-stick-dot" });
+		dot.style.left = `${50 + x * 42}%`;
+		dot.style.top = `${50 - y * 42}%`;
+		return el("span", { class: "psc-stick" }, dot);
+	}
+
+	function bar(value) {
+		const fill = el("span", { class: "psc-bar-fill" });
+		fill.style.width = `${Math.round(value * 100)}%`;
+		return el("span", { class: "psc-bar" }, fill);
+	}
+
+	function inputView(pad) {
+		return el("div", { class: "psc-pad", "data-player": pad.player },
+			el("div", { class: "psc-pad-head" },
+				el("strong", {}, pad.name || "Gamepad"),
+				el("span", { class: "tag is-link is-light" }, `Player ${pad.player}`),
+				pad.address ? "" : el("span", { class: "tag is-light" }, "USB"),
+			),
+			el("div", { class: "psc-pad-controls" },
+				el("figure", {}, stick(pad.left_x, pad.left_y), el("figcaption", {}, "Left stick")),
+				el("figure", {}, stick(pad.right_x, pad.right_y), el("figcaption", {}, "Right stick")),
+				el("div", { class: "psc-triggers" },
+					el("label", {}, "LT", bar(pad.left_trigger)),
+					el("label", {}, "RT", bar(pad.right_trigger)),
+				),
+			),
+			el("div", { class: "psc-pad-buttons" }, Object.entries(BUTTON_LABELS).map(([name, label]) =>
+				el("span", { class: `tag ${pad.pressed.includes(name) ? "is-success" : "is-light"}`, "data-button": name }, label))),
+		);
+	}
+
+	function updateInputViews() {
+		const list = $("#psc-pad-inputs", pads.body);
+		if (!list) return;
+		const players = pads.input.map(pad => String(pad.player)).join();
+		if (list.dataset.players !== players) {
+			list.dataset.players = players;
+			list.replaceChildren(...pads.input.map(inputView));
+			return;
+		}
+		for (const pad of pads.input) {
+			const view = list.querySelector(`[data-player="${pad.player}"]`);
+			if (view) view.replaceWith(inputView(pad));
+		}
+	}
+
+	function deviceRow(device) {
+		const job = device.job;
+		const busy = job && (job.state === "pairing" || job.state === "connecting");
+		let state;
+		if (busy) state = el("span", { class: "tag is-info is-light" }, job.message || "Pairing...");
+		else if (device.connected) state = el("span", { class: "tag is-success is-light" }, icon("check"), "Connected");
+		else if (device.paired) state = el("span", { class: "tag is-light" }, "Not connected");
+		const actions = device.paired
+			? [
+				device.connected ? el("button", { class: "button is-small", onclick: () => padAction("disconnect", { address: device.address }, "Couldn't disconnect.") }, "Disconnect") : "",
+				el("button", { class: "button is-small is-danger is-outlined", onclick: () => {
+					if (confirm(`Forget ${device.name}? You'll need to pair it again to use it.`)) padAction("forget", { address: device.address }, "Couldn't forget it.");
+				} }, "Forget"),
+			]
+			: [el("button", { class: `button is-small is-link${busy ? " is-loading" : ""}`, disabled: busy || pads.status.competition_blocked,
+				onclick: () => padAction("pair", { address: device.address }, "Couldn't start pairing.") }, "Pair")];
+		return el("div", { class: "psc-camera-row" },
+			el("span", { class: "icon" }, icon(device.gamepad ? "sports_esports" : "bluetooth")),
+			el("div", { class: "psc-camera-info" },
+				el("div", { class: "psc-camera-name" }, device.name),
+				el("div", { class: "psc-camera-meta" }, state || "", " ",
+					job && job.state === "failed" ? el("span", { class: "has-text-danger" }, job.message) : "",
+					!busy && device.paired && !device.connected && !(job && job.state === "failed") ? "Turn the controller on, or press its home button, to connect it." : ""),
+			),
+			el("div", { class: "buttons" }, actions),
+		);
+	}
+
+	function renderGamepads() {
+		const status = pads.status;
+		const parts = [];
+		if (pads.error) parts.push(el("div", { class: "notification is-danger is-light" }, pads.error));
+		if (!status) {
+			parts.push(el("p", {}, "Loading..."));
+			pads.body.replaceChildren(...parts);
+			return;
+		}
+		const bluetooth = status.bluetooth;
+		if (status.competition_blocked) {
+			parts.push(el("div", { class: "notification is-warning is-light" },
+				el("strong", {}, "Bluetooth is switched off by the competition USB."),
+				" Bluetooth gamepads can't be used during this match. USB gamepads still work."));
+		} else if (!bluetooth.present) {
+			parts.push(el("div", { class: "notification is-info is-light" },
+				"Bluetooth is starting. If this doesn't go away after a minute, restart the robot."));
+		}
+
+		parts.push(el("h3", { class: "title is-6" }, "Connected gamepads"));
+		parts.push(pads.input.length
+			? el("div", { id: "psc-pad-inputs", class: "psc-pad-list" })
+			: el("p", { class: "psc-muted" }, "No gamepad is connected. Pair a Bluetooth controller below, or plug one in with a USB cable."));
+
+		const paired = status.devices.filter(device => device.paired);
+		if (paired.length) {
+			parts.push(el("h3", { class: "title is-6" }, "Paired controllers"));
+			parts.push(el("div", { class: "psc-camera-list" }, paired.map(deviceRow)));
+		}
+
+		const nearby = status.devices.filter(device => !device.paired);
+		const searching = bluetooth.searching;
+		parts.push(el("h3", { class: "title is-6" }, "Pair a controller"));
+		parts.push(el("ol", { class: "psc-checklist" },
+			el("li", {}, el("div", {}, el("strong", {}, "Put the controller in pairing mode."),
+				el("details", { class: "psc-history", open: pads.howToOpen, ontoggle: event => { pads.howToOpen = event.target.open; } },
+					el("summary", {}, "How to do this for your controller"),
+					el("dl", { class: "psc-pairing" }, PAIRING_STEPS.map(([name, text]) => [el("dt", {}, name), el("dd", {}, text)]))))),
+			el("li", {}, el("div", {}, el("strong", {}, "Search, then pair it."),
+				el("div", { class: "buttons" },
+					el("button", { class: `button is-link${searching ? " is-loading" : ""}`, disabled: !bluetooth.powered || status.competition_blocked,
+						onclick: () => padAction("scan", { on: true }, "Couldn't start searching.") }, icon("search"), "Search"),
+					searching ? el("span", { class: "psc-muted" }, "Searching for 45 seconds...") : ""))),
+		));
+		if (nearby.length) parts.push(el("div", { class: "psc-camera-list" }, nearby.map(deviceRow)));
+		else if (searching) parts.push(el("p", { class: "psc-muted" }, "Nothing found yet. Check the controller is in pairing mode."));
+
+		parts.push(el("p", { class: "psc-muted psc-pad-code" }, "In your code, use ", code("robot.wait_for_gamepad()"), " and ", code("robot.gamepad"), "."));
+		pads.body.replaceChildren(...parts);
+		updateInputViews();
+	}
+
 	// ---------------------------------------------------------------- start
 	layoutCameras();
 	connect();
@@ -754,4 +983,7 @@
 	setInterval(() => refreshSummary(), 5000);
 	document.addEventListener("visibilitychange", () => refreshSummary());
 	if (location.hash === "#calibrate") openCalibration();
+	if (location.hash === "#gamepads") openGamepads();
+	refreshGamepads();
+	setInterval(() => { if (!padsOpen() && !document.hidden) refreshGamepads(); }, 10000);
 })();

@@ -1,0 +1,13 @@
+[Unit]
+Description=PSC Robotics gamepads (Bluetooth pairing)
+After=bluetooth.service mosquitto.service
+Wants=bluetooth.service mosquitto.service
+
+[Service]
+Type=simple
+ExecStart=/home/robot/.pyenv/versions/3.11.5/bin/python /usr/local/lib/psc-gamepadd.py
+Restart=always
+RestartSec=2
+
+[Install]
+WantedBy=multi-user.target

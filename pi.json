@@ -64,6 +64,7 @@
         "scripts/060-astoria.sh",
         "scripts/070-robot.sh",
         "scripts/080-kch.sh",
+        "scripts/085-gamepad.sh",
         "scripts/090-webui.sh",
         "scripts/100-network.sh",
         "scripts/110-cleanup.sh"
