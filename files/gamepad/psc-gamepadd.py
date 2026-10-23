@@ -57,9 +57,12 @@ BAD_PAIRING_HINT = (
 
 def load_gamepad_module():
     """Load sr.robot3.gamepad on its own, without importing the whole robot library."""
-    import sr  # A plain package with an empty __init__
+    import sr  # A namespace package once installed, so use __path__ rather than __file__
 
-    path = Path(sr.__file__).parent / "robot3" / "gamepad.py"
+    path = next((Path(base) / "robot3" / "gamepad.py" for base in sr.__path__
+                 if (Path(base) / "robot3" / "gamepad.py").exists()), None)
+    if path is None:
+        raise RuntimeError("Can't find sr/robot3/gamepad.py; is the robot library installed?")
     spec = importlib.util.spec_from_file_location("psc_gamepad", path)
     module = importlib.util.module_from_spec(spec)
     sys.modules["psc_gamepad"] = module
