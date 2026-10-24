@@ -32,6 +32,8 @@ python_bin="$(echo /home/$(id -un 1000)/.pyenv/versions/*/bin/python)"
 astwifid_py="$("$python_bin" -c 'import astoria.astwifid as m; print(m.__file__)')"
 "$python_bin" /tmp/packer/astoria/patch_astwifid.py "$astwifid_py"
 grep -q "_hotspot_band" "$astwifid_py"
+# Per-robot settings, on the boot partition so they can be edited from any computer.
+install -o root -g root -m 644 /tmp/packer/astoria/psc-robot.txt /boot/psc-robot.txt
 
 # astoria configs
 mv /tmp/packer/astoria/astoria.toml /etc/

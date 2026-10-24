@@ -1,0 +1,11 @@
+# PSC Robotics robot settings
+#
+# This file is on the SD card's boot partition, so you can edit it from any
+# computer. Restart the robot after changing it.
+
+# The band the robot's WiFi network uses:
+#   auto  5GHz on boards that support it (Pi 4, Pi 400, Pi 3B+), otherwise 2.4GHz
+#   5     5GHz (2.4GHz on boards without 5GHz WiFi)
+#   2.4   2.4GHz: every phone and laptop can see it, but Bluetooth gamepads
+#         connect less reliably, as Bluetooth uses the same radio and band
+wifi_band = auto
