@@ -1,0 +1,14 @@
+[flake8]
+max_line_length = 95
+ignore =
+    # Don't require imperative mood docstrings.
+    D401,
+    # Ignore docstrings on magic methods
+    D105,
+    # Ignore docstrings on init methods
+    D107,
+    # Allow line breaks before and after a binary operator
+    W503, W504,
+    # Ignore TODO comments
+    T000,
+
