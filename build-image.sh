@@ -12,7 +12,7 @@ SROBO_VERSION="${PSC_IMAGE_VERSION:-$(git describe --tags --always --dirty 2>/de
 docker run --rm --privileged \
     -v /dev:/dev \
     -v "${SCRIPT_DIR}:/build" \
-    -v "${SCRIPT_DIR}/../psc-sr-robot3:/psc-sr-robot3:ro" \
+    -v "${SCRIPT_DIR}/psc-sr-robot3:/psc-sr-robot3:ro" \
     -w /build \
     mkaczanowski/packer-builder-arm:latest \
     build \
