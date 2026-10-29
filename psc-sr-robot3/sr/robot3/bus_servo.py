@@ -29,7 +29,24 @@ SUPPORTED_VID_PIDS = {
     (0x1A86, 0x55D3),  # Waveshare Bus Servo Adapter (A) (WCH CH343)
 }
 BAUDRATE = 1_000_000  # the servos' default
-GPIO_UART = Path("/dev/serial0")
+
+
+def _gpio_uart() -> Path:
+    """
+    The serial port on GPIO 14/15.
+
+    This is serial0 on a Pi 3 or 4, but on a Pi 5 serial0 is its separate debug
+    connector, and GPIO 14/15 is ttyAMA0.
+    """
+    try:
+        if "Raspberry Pi 5" in Path("/proc/device-tree/model").read_text():
+            return Path("/dev/ttyAMA0")
+    except OSError:
+        pass
+    return Path("/dev/serial0")
+
+
+GPIO_UART = _gpio_uart()
 SCAN_IDS = range(1, 21)
 
 INST_PING = 0x01

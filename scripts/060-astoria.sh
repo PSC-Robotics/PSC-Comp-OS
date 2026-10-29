@@ -10,7 +10,9 @@ if [ -f /etc/default/hostapd ]; then
     sed -i 's|^#?DAEMON_CONF=.*|DAEMON_CONF="/etc/hostapd/hostapd.conf"|' /etc/default/hostapd
 fi
 systemctl disable hostapd.service
-raspi-config nonint do_wifi_country GB
+raspi-config nonint do_wifi_country GB || true
+# Set the WiFi region in the kernel too, as raspi-config can't fully in a chroot.
+sed -i 's/$/ cfg80211.ieee80211_regdom=GB/' /boot/firmware/cmdline.txt
 
 # udisks2
 mv /tmp/packer/astoria/udisks/mount_options.conf /etc/udisks2/
@@ -33,7 +35,7 @@ astwifid_py="$("$python_bin" -c 'import astoria.astwifid as m; print(m.__file__)
 "$python_bin" /tmp/packer/astoria/patch_astwifid.py "$astwifid_py"
 grep -q "_hotspot_band" "$astwifid_py"
 # Per-robot settings, on the boot partition so they can be edited from any computer.
-install -o root -g root -m 644 /tmp/packer/astoria/psc-robot.txt /boot/psc-robot.txt
+install -o root -g root -m 644 /tmp/packer/astoria/psc-robot.txt /boot/firmware/psc-robot.txt
 
 # astoria configs
 mv /tmp/packer/astoria/astoria.toml /etc/

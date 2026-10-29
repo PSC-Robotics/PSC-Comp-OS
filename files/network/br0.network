@@ -1,0 +1,13 @@
+# The robot's WiFi hotspot bridge (hostapd adds wlan0 to it). Bookworm has no
+# dhcpcd, so systemd-networkd gives it its address.
+[Match]
+Name=br0
+
+[Network]
+Address=192.168.32.1/24
+ConfigureWithoutCarrier=yes
+LinkLocalAddressing=no
+IPv6AcceptRA=no
+
+[Link]
+RequiredForOnline=no

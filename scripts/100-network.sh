@@ -16,8 +16,14 @@ chmod 644 /etc/dnsmasq.d/srobo.conf
 mv /tmp/packer/network/br0.netdev /etc/systemd/network/
 chmod 644 /etc/systemd/network/br0.netdev
 
-# Setup bridge address
-cat /tmp/packer/network/br0-dnsmasq.conf >> /etc/dhcpcd.conf
+# Bridge address (systemd-networkd), and keep NetworkManager off the hotspot.
+mv /tmp/packer/network/br0.network /etc/systemd/network/
+chmod 644 /etc/systemd/network/br0.network
+install -o root -g root -m 644 /tmp/packer/network/nm-psc-unmanaged.conf \
+    /etc/NetworkManager/conf.d/psc-unmanaged.conf
+systemctl enable systemd-networkd.service
+# networkd only runs br0 (not needed for being online): don't hold up boot waiting.
+systemctl mask systemd-networkd-wait-online.service
 
 
 echo "net.ipv4.ip_forward=1" > /etc/sysctl.d/ip_forward.conf

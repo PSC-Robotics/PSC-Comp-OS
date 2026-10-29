@@ -19,7 +19,8 @@ mv /etc/sudoers.d/010_pi-nopasswd /etc/sudoers.d/010_robot-nopasswd
 sed -i 's/pi/robot/g' /etc/sudoers.d/010_robot-nopasswd
 
 # Raspberry Pi OS reads this file on first boot to set the initial user.
-printf '%s:%s\n' "$user" "$(openssl passwd -crypt -salt robot robot)" > /boot/userconf
+# (OpenSSL 3 has no -crypt; -6 is SHA-512 crypt, which Raspberry Pi OS uses.)
+printf '%s:%s\n' "$user" "$(openssl passwd -6 robot)" > /boot/firmware/userconf.txt
 
 # Enable ssh
-touch /boot/ssh
+touch /boot/firmware/ssh
