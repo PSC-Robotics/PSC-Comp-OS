@@ -12,7 +12,7 @@ fi
 systemctl disable hostapd.service
 raspi-config nonint do_wifi_country GB || true
 # Set the WiFi region in the kernel too, as raspi-config can't fully in a chroot.
-sed -i 's/$/ cfg80211.ieee80211_regdom=GB/' /boot/firmware/cmdline.txt
+grep -q ieee80211_regdom /boot/firmware/cmdline.txt || sed -i 's/$/ cfg80211.ieee80211_regdom=GB/' /boot/firmware/cmdline.txt
 
 # udisks2
 mv /tmp/packer/astoria/udisks/mount_options.conf /etc/udisks2/
