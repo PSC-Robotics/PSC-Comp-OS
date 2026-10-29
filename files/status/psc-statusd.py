@@ -298,8 +298,11 @@ class MotorGuard:
             pins = list(self._pins)
         for pin in pins:
             try:
-                # An input with a pull-down: the DRV8871's inputs read low, so it coasts.
+                # An input, so the DRV8871's inputs read low (it has pull-downs) and
+                # it coasts. Then release the pin: on bookworm (lgpio) only one
+                # program can hold a pin, and the next run of robot code needs it.
                 self._gpio.setup(pin, self._gpio.IN, pull_up_down=self._gpio.PUD_DOWN)
+                self._gpio.cleanup(pin)
             except Exception as error:
                 print(f"Failed to stop the motor on GPIO {pin}: {error}", flush=True)
         if pins:
