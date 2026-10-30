@@ -21,15 +21,17 @@ Sounds (defaults; each can be changed in /etc/psc-status.toml):
 It also stops DC motors that robot code drove from the Pi's pins when the code
 stops, in case the code was killed before it could stop them itself.
 
-A chain of WS2812 ("NeoPixel") LEDs on GPIO 10 (SPI MOSI) shows the same status
-on its first LED, and the colours robot code sets (robot.leds) on the rest. Robot
-code's LEDs turn off when the code stops.
+A chain of WS2812 ("NeoPixel") LEDs shows the same status on its first LED, and
+the colours robot code sets (robot.leds) on the rest. Robot code's LEDs turn off
+when the code stops. The chain's data is sent on GPIO 18 (PWM, as the Brain Board
+HAT is wired) and GPIO 10 (SPI MOSI) at once, so it works on either pin.
 
 Pins, LED polarity, the LED chain, buzzer type, volume and sounds are set in
 /etc/psc-status.toml.
 """
 from __future__ import annotations
 
+import atexit
 import fcntl
 import json
 import os
@@ -228,7 +230,7 @@ class BuzzerPlayer:
                 sound = self._requests.get()
 
 
-class LedStrip:
+class SpiLeds:
     """
     A chain of WS2812 LEDs on SPI0 MOSI (GPIO 10).
 
@@ -247,6 +249,8 @@ class LedStrip:
     RESET_BYTES = 128
     MAX_TRANSFER = 4096  # the spidev driver's default largest transfer
     MAX_COUNT = (MAX_TRANSFER - 2 * RESET_BYTES) // 12
+
+    pin = 10
 
     def __init__(self, device: str, count: int) -> None:
         self.count = count
@@ -282,21 +286,56 @@ class LedStrip:
             os.close(self._fd)
 
 
+class PwmLeds:
+    """
+    A chain of WS2812 LEDs on GPIO 18, driven by the Pi's PWM hardware through
+    rpi_ws281x. Needs root, and the analogue audio off (dtparam=audio=off), as
+    that also uses the PWM hardware.
+    """
+
+    pin = 18
+    DMA_CHANNEL = 10
+
+    def __init__(self, count: int) -> None:
+        from rpi_ws281x import PixelStrip, WS2811_STRIP_GRB
+
+        self.count = count
+        self._strip = PixelStrip(count, self.pin, 800_000, self.DMA_CHANNEL, False, 255, 0,
+                                 WS2811_STRIP_GRB)
+        try:
+            self._strip.begin()  # raises RuntimeError if it can't
+        except Exception:
+            # Its exit handler would free hardware it never set up, and crash.
+            atexit.unregister(self._strip._cleanup)
+            raise
+
+    def show(self, colours: list[tuple[int, int, int]]) -> None:
+        for i in range(self.count):
+            red, green, blue = colours[i] if i < len(colours) else (0, 0, 0)
+            self._strip.setPixelColorRGB(i, red, green, blue)
+        self._strip.show()
+
+    def close(self) -> None:
+        self.show([])
+        # rpi_ws281x has no close; its exit handler releases the hardware.
+
+
 class LedChain:
     """
     What the WS2812 chain shows: the status on the first LED (if status_led is on)
     and robot code's colours on the rest. Writes the LEDs only when something changes.
     """
 
-    def __init__(self, strip: LedStrip, status_led: bool, status_brightness: float,
+    def __init__(self, strips: list, status_led: bool, status_brightness: float,
                  brightness: float) -> None:
-        self._strip = strip
+        self._strips = strips
+        self.count = max(strip.count for strip in strips)
         self._status_led = status_led
         self._status_brightness = status_brightness
         self._brightness = brightness
         self._lock = threading.Lock()
         self._status = (0, 0, 0)
-        self._user = [(0, 0, 0)] * (strip.count - 1 if status_led else strip.count)
+        self._user = [(0, 0, 0)] * (self.count - 1 if status_led else self.count)
         self._shown: list[tuple[int, int, int]] | None = None
 
     def set_status(self, colour: tuple[bool, bool, bool]) -> None:
@@ -329,31 +368,48 @@ class LedChain:
             colours = ([self._status] if self._status_led else []) + self._user
             if colours == self._shown:
                 return
-            try:
-                self._strip.show(colours)
-                self._shown = colours
-            except OSError as error:
-                print(f"Failed to set the LED chain: {error}", flush=True)
+            self._shown = colours
+            for strip in self._strips:
+                try:
+                    strip.show(colours)
+                except Exception as error:
+                    print(f"Failed to set the LED chain on GPIO {strip.pin}: {error}", flush=True)
 
     def close(self) -> None:
         with self._lock:
-            self._strip.close()
+            for strip in self._strips:
+                try:
+                    strip.close()
+                except Exception as error:
+                    print(f"Failed to turn off the LED chain on GPIO {strip.pin}: {error}",
+                          flush=True)
 
 
 def open_led_chain(config: dict) -> LedChain | None:
-    """The WS2812 chain, or None if it's turned off or the SPI port isn't there."""
+    """
+    The WS2812 chain on each of its pins that works, or None if it's turned off or
+    no pin works.
+    """
     strip = config["led_strip"]
     if not strip["enabled"] or strip["count"] == 0:
         return None
-    try:
-        chain = LedChain(LedStrip(strip["device"], strip["count"]), strip["status_led"],
-                         strip["status_brightness"], strip["brightness"])
-    except OSError as error:
-        print(f"No WS2812 LED chain ({strip['device']}: {error}); "
-              "check dtparam=spi=on is in /boot/config.txt", flush=True)
+    strips = []
+    for pin in strip["pins"]:
+        try:
+            if pin == SpiLeds.pin:
+                strips.append(SpiLeds(strip["device"], strip["count"]))
+            else:
+                strips.append(PwmLeds(strip["count"]))
+        except Exception as error:
+            hint = ("check dtparam=spi=on is in /boot/config.txt" if pin == SpiLeds.pin
+                    else "check rpi_ws281x is installed and dtparam=audio=off")
+            print(f"WS2812 LED chain not on GPIO {pin} ({error}); {hint}", flush=True)
+    if not strips:
         return None
-    print(f"WS2812 LED chain: {strip['count']} LEDs on GPIO 10", flush=True)
-    return chain
+    print(f"WS2812 LED chain: {strip['count']} LEDs on GPIO "
+          f"{' and '.join(str(s.pin) for s in strips)}", flush=True)
+    return LedChain(strips, strip["status_led"], strip["status_brightness"],
+                    strip["brightness"])
 
 
 def load_config(path: Path = CONFIG_FILE) -> dict:
@@ -378,13 +434,17 @@ def load_config(path: Path = CONFIG_FILE) -> dict:
     strip.setdefault("status_led", True)
     strip.setdefault("status_brightness", 0.2)
     strip.setdefault("brightness", 1.0)
+    strip.setdefault("pins", [18, 10])
     strip.setdefault("device", "/dev/spidev0.0")
+    pins = strip["pins"]
+    if not isinstance(pins, list) or not set(pins) <= {10, 18} or len(set(pins)) != len(pins):
+        raise ValueError("led_strip.pins must list GPIO 18, GPIO 10 or both")
     for name in ("enabled", "status_led"):
         if not isinstance(strip[name], bool):
             raise ValueError(f"led_strip.{name} must be true or false")
     count = strip["count"]
-    if isinstance(count, bool) or not isinstance(count, int) or not 0 <= count <= LedStrip.MAX_COUNT:
-        raise ValueError(f"led_strip.count must be from 0 to {LedStrip.MAX_COUNT}")
+    if isinstance(count, bool) or not isinstance(count, int) or not 0 <= count <= SpiLeds.MAX_COUNT:
+        raise ValueError(f"led_strip.count must be from 0 to {SpiLeds.MAX_COUNT}")
     for name in ("status_brightness", "brightness"):
         value = strip[name]
         if isinstance(value, bool) or not isinstance(value, (int, float)) or not 0 <= value <= 1:

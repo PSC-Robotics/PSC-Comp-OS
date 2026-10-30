@@ -90,7 +90,7 @@ def test_user_led_count(tmp_path, config, expected) -> None:
     assert user_led_count(path) == expected
 
 
-@pytest.mark.parametrize("pin", [7, 8, 9, 10, 11])
+@pytest.mark.parametrize("pin", [7, 8, 9, 10, 11, 18])
 def test_spi_pins_are_reserved(pin) -> None:
     with pytest.raises(ValueError, match="LED strip"):
         RaspberryPi(gpio_loader=lambda: None).dc_motor(pin, 20)

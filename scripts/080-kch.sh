@@ -18,9 +18,14 @@ gpio=17=op,dh
 gpio=13,22,27=op,dl
 gpio=5=ip,pu
 
-# SPI for the WS2812 LED chain (data on GPIO 10, header pin 19)
+# SPI for the WS2812 LED chain on GPIO 10 (header pin 19)
 dtparam=spi=on
 CONFIG
+
+# The WS2812 LED chain on GPIO 18 (header pin 12) uses the PWM hardware, which the
+# analogue audio output also uses, so turn the audio off.
+sed -i 's/^dtparam=audio=on/dtparam=audio=off/' /boot/config.txt
+grep -qx 'dtparam=audio=off' /boot/config.txt
 
 # Bus servos on the Pi's serial port (GPIO 14 TX, GPIO 15 RX). Bus servos run at
 # 1Mbaud, which needs the full PL011 UART, so give it to the GPIO pins and move

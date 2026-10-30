@@ -1,5 +1,7 @@
 # The python packages required to make the image work
 RPi.GPIO>=0.7.0,<1
+# Drives the WS2812 LED chain on GPIO 18 (psc-statusd)
+rpi_ws281x>=5.0,<6
 kchd==0.4.1
 astoria==0.11.3
 
