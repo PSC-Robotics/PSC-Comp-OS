@@ -17,6 +17,9 @@ cat << 'CONFIG' >> /boot/config.txt
 gpio=17=op,dh
 gpio=13,22,27=op,dl
 gpio=5=ip,pu
+
+# SPI for the WS2812 LED chain (data on GPIO 10, header pin 19)
+dtparam=spi=on
 CONFIG
 
 # Bus servos on the Pi's serial port (GPIO 14 TX, GPIO 15 RX). Bus servos run at

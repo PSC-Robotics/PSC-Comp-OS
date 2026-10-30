@@ -9,6 +9,18 @@ blue = 17    # header pin 11
 # true for a common-cathode LED (shared leg to GND), false for common-anode.
 active_high = true
 
+# A chain of WS2812 ("NeoPixel") LEDs, as well as or instead of the RGB LED above.
+# Wire the first LED's DIN to GPIO 10 (header pin 19), VDD to 5V and GND to GND;
+# chain each LED's DOUT to the next one's DIN. The first LED shows the robot's
+# status like the RGB LED; robot code sets the others with robot.leds.
+# Restart psc-statusd after editing (robot code reads count when it starts).
+[led_strip]
+enabled = true
+count = 2                # LEDs in the chain, including the status LED (up to 320)
+status_led = true        # false: robot code controls every LED, including the first
+status_brightness = 0.2  # 0 to 1; the status LED at full brightness is dazzling
+brightness = 1.0         # 0 to 1, scales the colours robot code sets
+
 [start_button]
 pin = 5      # header pin 29; wire the button between this pin and GND
 pull = "up"  # internal pull-up, so a press pulls the pin low

@@ -84,6 +84,7 @@ buzzer type are set in `/etc/psc-status.toml`:
 | LED red | 22 | 15 |
 | Start button | 5 | 29 |
 | Buzzer (passive) | 13 | 33 |
+| WS2812 LED chain (data in) | 10 | 19 |
 
 | LED | Meaning |
 | --- | --- |
@@ -107,6 +108,17 @@ Robot code plays tones with `robot.buzzer.buzz()`, which asks `psc-statusd` to
 play them over MQTT (`psc/buzzer`), so only one process drives the buzzer pin.
 The buzzer is silenced whenever robot code is not running, so a tone left
 playing stops when the code finishes, crashes or is killed.
+
+A chain of WS2812 ("NeoPixel") LEDs can be used as well as, or instead of, the
+RGB LED. Wire the first LED's DIN to GPIO 10, VDD to 5V and GND to GND, and each
+LED's DOUT to the next one's DIN. The first LED shows the same status; robot
+code sets the rest with `robot.leds[0] = (255, 0, 0)`, over MQTT (`psc/leds`),
+and they turn off when the code stops. The chain is driven from the SPI port
+(`dtparam=spi=on`), which also takes GPIO 7, 8, 9 and 11, so robot code can't use
+those pins. Set the number of LEDs under `[led_strip]` in `/etc/psc-status.toml`
+(default 2). Unlike the RGB LED, the chain lights only once `psc-statusd` starts,
+not from power-on. The Pi's 3.3V data usually works; if colours flicker, add a
+74AHCT125 level shifter on DIN.
 
 The LED is common-cathode (`active_high = true`). Wire the start button between
 GPIO 5 and GND; the internal pull-up is enabled. Never connect a GPIO pin to

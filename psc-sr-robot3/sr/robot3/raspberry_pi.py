@@ -13,9 +13,13 @@ from .pin_motors import DCMotor, Stepper, register_driven_pins
 LOGGER = logging.getLogger(__name__)
 
 # Pins the robot itself uses: the status LED (17, 27, 22), the start button (5),
-# the buzzer (13) and the serial port for bus servos (14, 15).
+# the buzzer (13), the serial port for bus servos (14, 15) and the SPI port for
+# the WS2812 LED chain (data on 10; 7, 8, 9 and 11 also belong to SPI).
 # Pins 0 and 1 are reserved for the HAT EEPROM.
 RESERVED_PINS = {0: "HAT EEPROM", 1: "HAT EEPROM", 5: "the start button", 13: "the buzzer",
+                 7: "the LED strip's SPI port", 8: "the LED strip's SPI port",
+                 9: "the LED strip's SPI port", 10: "the LED strip (WS2812 data)",
+                 11: "the LED strip's SPI port",
                  14: "the serial port (bus servos)", 15: "the serial port (bus servos)",
                  17: "the status LED", 22: "the status LED", 27: "the status LED"}
 MIN_STEP_DELAY_US = 50

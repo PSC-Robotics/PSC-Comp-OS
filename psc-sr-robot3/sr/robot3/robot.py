@@ -20,6 +20,7 @@ from .camera import AprilCamera, _setup_cameras
 from .exceptions import MetadataNotReadyError
 from .gamepad import Gamepad, GamepadManager
 from .kch import KCH
+from .leds import LEDStrip, user_led_count
 from .logging import log_to_debug, setup_logging
 from .motor_board import MotorBoard
 from .power_board import Note, PowerBoard
@@ -57,7 +58,7 @@ class Robot(metaclass=FinalMeta):
         '_lock', '_metadata', '_power_board', '_motor_boards', '_servo_boards',
         '_arduinos', '_cameras', '_mqtt', '_astoria', '_kch', '_raw_ports',
         '_time_server', '_no_powerboard', '_buzzer', '_raspberry_pi', '_bus_servo_adapters',
-        '_gamepads',
+        '_gamepads', '_leds',
     )
 
     def __init__(
@@ -161,6 +162,7 @@ class Robot(metaclass=FinalMeta):
 
         self._kch = KCH()
         self._buzzer = Buzzer(self._mqtt, self.sleep)
+        self._leds = LEDStrip(self._mqtt, 0 if IN_SIMULATOR else user_led_count())
         self._raspberry_pi = RaspberryPi()
         self._gamepads = GamepadManager()
         self._motor_boards = MotorBoard._get_supported_boards(manual_motorboards)
@@ -253,6 +255,15 @@ class Robot(metaclass=FinalMeta):
         :returns: The Buzzer object
         """
         return self._buzzer
+
+    @property
+    def leds(self) -> LEDStrip:
+        """
+        Access the WS2812 LEDs chained after the robot's status LED.
+
+        :returns: The LEDStrip object
+        """
+        return self._leds
 
     @property
     def raspberry_pi(self) -> RaspberryPi:
