@@ -323,7 +323,9 @@ class PwmLeds:
 class LedChain:
     """
     What the WS2812 chain shows: the status on the first LED (if status_led is on)
-    and robot code's colours on the rest. Writes the LEDs only when something changes.
+    and robot code's colours on the rest. Writes the LEDs when something changes,
+    and again on every status update (twice a second), so LEDs connected or
+    glitched after a change still show the right colours.
     """
 
     def __init__(self, strips: list, status_led: bool, status_brightness: float,
@@ -342,7 +344,7 @@ class LedChain:
         level = round(255 * self._status_brightness)
         with self._lock:
             self._status = tuple(level if lit else 0 for lit in colour)  # type: ignore[assignment]
-        self._show()
+        self._show(refresh=True)
 
     def set_user(self, payload: bytes) -> None:
         """Set robot code's LEDs from a robot.leds message, ignoring invalid ones."""
@@ -363,10 +365,10 @@ class LedChain:
             self._user = [(0, 0, 0)] * len(self._user)
         self._show()
 
-    def _show(self) -> None:
+    def _show(self, refresh: bool = False) -> None:
         with self._lock:
             colours = ([self._status] if self._status_led else []) + self._user
-            if colours == self._shown:
+            if colours == self._shown and not refresh:
                 return
             self._shown = colours
             for strip in self._strips:
