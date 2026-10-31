@@ -94,3 +94,38 @@ def test_user_led_count(tmp_path, config, expected) -> None:
 def test_spi_pins_are_reserved(pin) -> None:
     with pytest.raises(ValueError, match="LED strip"):
         RaspberryPi(gpio_loader=lambda: None).dc_motor(pin, 20)
+
+
+def test_sr_style_user_leds(caplog) -> None:
+    from sr.robot3 import LED_A, LED_B
+    from sr.robot3.leds import chain_leds
+    mqtt = FakeMQTT()
+    leds = chain_leds(LEDStrip(mqtt, 1))
+
+    leds[LED_A].colour = Colour.BLUE
+    assert leds[LED_A].colour == Colour.BLUE
+    leds[LED_A].r = True
+    assert leds[LED_A].colour == Colour.MAGENTA and leds[LED_A].r and not leds[LED_A].g
+    leds[LED_A].b = False
+    assert leds[LED_A].colour == Colour.RED
+    leds[LED_A].colour = (255, 80, 0)
+    assert leds[LED_A].colour == (255, 80, 0)
+    assert [colours for _, colours, _ in mqtt.published] == [
+        [[0, 0, 255]], [[255, 0, 255]], [[255, 0, 0]], [[255, 80, 0]]]
+
+    # LED_B isn't in a 2-LED chain: a warning, not a crash.
+    leds[LED_B].colour = Colour.RED
+    assert leds[LED_B].colour == Colour.OFF
+    assert "LED_B isn't connected" in caplog.text
+    assert len(mqtt.published) == 4
+
+    with pytest.raises(ValueError):
+        leds[LED_A].colour = "blue"
+
+
+def test_robot_exposes_user_leds_on_kch_and_raspberry_pi() -> None:
+    from sr.robot3.kch import KCH
+    from sr.robot3.leds import chain_leds
+    user_leds = chain_leds(LEDStrip(FakeMQTT(), 1))
+    assert KCH(user_leds).leds is user_leds
+    assert RaspberryPi(gpio_loader=lambda: None, leds=user_leds).leds is user_leds

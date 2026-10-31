@@ -20,7 +20,7 @@ from .camera import AprilCamera, _setup_cameras
 from .exceptions import MetadataNotReadyError
 from .gamepad import Gamepad, GamepadManager
 from .kch import KCH
-from .leds import LEDStrip, user_led_count
+from .leds import LEDStrip, chain_leds, user_led_count
 from .logging import log_to_debug, setup_logging
 from .motor_board import MotorBoard
 from .power_board import Note, PowerBoard
@@ -160,10 +160,11 @@ class Robot(metaclass=FinalMeta):
         manual_servoboards = manual_boards.get(ServoBoard.get_board_type(), [])
         manual_arduinos = manual_boards.get(Arduino.get_board_type(), [])
 
-        self._kch = KCH()
-        self._buzzer = Buzzer(self._mqtt, self.sleep)
         self._leds = LEDStrip(self._mqtt, 0 if IN_SIMULATOR else user_led_count())
-        self._raspberry_pi = RaspberryPi()
+        user_leds = chain_leds(self._leds)
+        self._kch = KCH(user_leds)
+        self._buzzer = Buzzer(self._mqtt, self.sleep)
+        self._raspberry_pi = RaspberryPi(leds=user_leds)
         self._gamepads = GamepadManager()
         self._motor_boards = MotorBoard._get_supported_boards(manual_motorboards)
         self._servo_boards = ServoBoard._get_supported_boards(manual_servoboards)

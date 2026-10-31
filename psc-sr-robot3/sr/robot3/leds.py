@@ -7,6 +7,7 @@ import sys
 from pathlib import Path
 from typing import Iterable, Optional, Sequence, Union, overload
 
+from .kch import LED
 from .mqtt import MQTTClient
 
 if sys.version_info >= (3, 11):
@@ -156,3 +157,92 @@ class LEDStrip:
 
     def __repr__(self) -> str:
         return f"<{self.__class__.__qualname__} count={len(self._colours)}>"
+
+
+class ChainLED(LED):
+    """
+    A user LED, as on Student Robotics' KCH board, that is an LED in the WS2812
+    chain: ``robot.kch.leds[LED_A]`` (or ``robot.raspberry_pi.leds[LED_A]``) is
+    the first LED after the status LED, ``LED_B`` the next, and so on.
+
+    Set it with ``led.colour = Colour.RED``, or one part at a time with
+    ``led.r = True``. A colour can also be (red, green, blue), each from 0 to 255.
+    """
+    __slots__ = ('_strip', '_index', '_number')
+
+    def __init__(self, strip: LEDStrip, number: int) -> None:
+        self._strip = strip
+        self._number = number
+        self._index: Optional[int] = number if number < len(strip) else None
+
+    def _get(self) -> RGB:
+        return OFF if self._index is None else self._strip[self._index]
+
+    def _set(self, colour: Colour) -> None:
+        rgb = to_rgb(colour)
+        if self._index is None:
+            LOGGER.warning(
+                f"LED_{'ABC'[self._number]} "
+                f"isn't connected: the robot's LED chain has {len(self._strip)} LED(s) "
+                "for your code; set the chain's count in /etc/psc-status.toml on the robot")
+            return
+        self._strip[self._index] = rgb
+
+    def _set_part(self, part: int, value: Union[bool, int]) -> None:
+        colour = list(self._get())
+        colour[part] = value if not isinstance(value, bool) else (255 if value else 0)
+        self._set(colour)
+
+    @property
+    def r(self) -> bool:
+        """Get the state of the Red LED segment."""
+        return self._get()[0] > 0
+
+    @r.setter
+    def r(self, value: bool) -> None:
+        """Set the state of the Red LED segment."""
+        self._set_part(0, value)
+
+    @property
+    def g(self) -> bool:
+        """Get the state of the Green LED segment."""
+        return self._get()[1] > 0
+
+    @g.setter
+    def g(self, value: bool) -> None:
+        """Set the state of the Green LED segment."""
+        self._set_part(1, value)
+
+    @property
+    def b(self) -> bool:
+        """Get the state of the Blue LED segment."""
+        return self._get()[2] > 0
+
+    @b.setter
+    def b(self, value: bool) -> None:
+        """Set the state of the Blue LED segment."""
+        self._set_part(2, value)
+
+    @property
+    def colour(self):  # type: ignore[override]
+        """
+        Get the colour of the user LED: a ``Colour`` such as ``Colour.RED`` if
+        it is one, otherwise (red, green, blue), each from 0 to 255.
+        """
+        rgb = self._get()
+        if all(part in (0, 255) for part in rgb):
+            return tuple(part == 255 for part in rgb)
+        return rgb
+
+    @colour.setter
+    def colour(self, value: Colour) -> None:
+        """Set the colour of the user LED."""
+        self._set(value)
+
+    def __repr__(self) -> str:
+        return f"<{self.__class__.__qualname__} {'ABC'[self._number]} colour={self.colour}>"
+
+
+def chain_leds(strip: LEDStrip) -> tuple[ChainLED, ...]:
+    """The user LEDs, LED_A to LED_C, on the WS2812 chain."""
+    return tuple(ChainLED(strip, number) for number in range(3))

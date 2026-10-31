@@ -53,16 +53,20 @@ class RaspberryPi:
 
     :param gpio_loader: Returns the RPi.GPIO module; replaced in tests.
     :param clock_ns: A monotonic clock in nanoseconds; replaced in tests.
+    :param leds: The user LEDs (LED_A to LED_C).
     """
     __slots__ = (
         '_gpio', '_gpio_loader', '_clock_ns', '_pin_modes', '_pwms', '_motors', '_claims',
+        '_leds',
     )
 
     def __init__(
         self,
         gpio_loader: Callable[[], ModuleType] = _load_gpio,
         clock_ns: Callable[[], int] = time.perf_counter_ns,
+        leds: tuple = (),
     ) -> None:
+        self._leds = leds
         self._gpio: Optional[ModuleType] = None
         self._gpio_loader = gpio_loader
         self._clock_ns = clock_ns
@@ -71,6 +75,15 @@ class RaspberryPi:
         # Motors by kind and pins, and which motor uses each pin.
         self._motors: dict[tuple, object] = {}
         self._claims: dict[int, tuple] = {}
+
+    @property
+    def leds(self) -> tuple:
+        """
+        The user LEDs: WS2812s chained after the status LED. Set one with
+        ``robot.raspberry_pi.leds[LED_A].colour = Colour.RED``, as on Student
+        Robotics' KCH board.
+        """
+        return self._leds
 
     def _load(self) -> ModuleType:
         if self._gpio is None:
