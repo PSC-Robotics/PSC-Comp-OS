@@ -87,13 +87,14 @@ buzzer type are set in `/etc/psc-status.toml`:
 | WS2812 LED chain (data in, Brain Board HAT) | 18 | 12 |
 | WS2812 LED chain (data in, alternative) | 10 | 19 |
 
-| LED | Meaning |
-| --- | --- |
-| Blue, flashing | Booting (solid blue from power-on until the service starts) |
-| Green | Ready |
-| Green, flashing | Robot code is waiting for the start button |
-| Blue | Robot code running |
-| Red | Robot code crashed |
+| State | RGB LED | WS2812 status LED |
+| --- | --- | --- |
+| Booting | Blue, flashing (solid blue from power-on until the service starts) | Blue, pulsing |
+| No code USB plugged in | Green | Pink, flashing |
+| Waiting for the start button | Green, flashing | Green, pulsing slowly (dim) |
+| Robot code running | Blue | Green |
+| Robot code finished or stopped | Green | White (dim) |
+| Robot code crashed | Red | Red, flashing |
 
 | Sound | Meaning |
 | --- | --- |
@@ -113,7 +114,7 @@ playing stops when the code finishes, crashes or is killed.
 A chain of WS2812 ("NeoPixel") LEDs can be used as well as, or instead of, the
 RGB LED. Wire the first LED's DIN to GPIO 18 (as on the Brain Board HAT) or
 GPIO 10, VDD to 5V and GND to GND, and each LED's DOUT to the next one's DIN. The
-first LED shows the same status; robot code sets the rest with
+first LED shows the status (see the table above); robot code sets the rest with
 `robot.leds[0] = (255, 0, 0)`, over MQTT (`psc/leds`), and they turn off when the
 code stops. `psc-statusd` sends the same data on both pins: GPIO 18 through the
 PWM hardware (`rpi_ws281x`; the analogue audio output is turned off, as it also

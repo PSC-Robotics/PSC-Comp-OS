@@ -6,11 +6,13 @@ into the same Astoria start event that the web UI's Start button sends, and
 plays sounds on the buzzer: system sounds, and tones requested by robot code
 through robot.buzzer.
 
-    Booting            blue, flashing
-    Ready              green
-    Waiting for start  green, flashing
-    Code running       blue
-    Code crashed       red
+                       RGB LED          WS2812 status LED
+    Booting            blue, flashing   blue, pulsing
+    No code USB        green            pink, flashing
+    Waiting for start  green, flashing  green, pulsing slowly (dim)
+    Code running       blue             green
+    Code finished      green            white (dim)
+    Code crashed       red              red, flashing
 
 Sounds (defaults; each can be changed in /etc/psc-status.toml):
 
@@ -21,7 +23,7 @@ Sounds (defaults; each can be changed in /etc/psc-status.toml):
 It also stops DC motors that robot code drove from the Pi's pins when the code
 stops, in case the code was killed before it could stop them itself.
 
-A chain of WS2812 ("NeoPixel") LEDs shows the same status on its first LED, and
+A chain of WS2812 ("NeoPixel") LEDs shows the status on its first LED, and
 the colours robot code sets (robot.leds) on the rest. Robot code's LEDs turn off
 when the code stops. The chain's data is sent on GPIO 18 (PWM, as the Brain Board
 HAT is wired) and GPIO 10 (SPI MOSI) at once, so it works on either pin.
@@ -34,6 +36,7 @@ from __future__ import annotations
 import atexit
 import fcntl
 import json
+import math
 import os
 import queue
 import signal
@@ -59,17 +62,47 @@ GREEN = (False, True, False)
 BLUE = (False, False, True)
 
 
+# How often the LEDs are updated, and how long a flash or pulse takes.
+TICK = 0.05
+FLASH_PERIOD = 1.0
+PULSE_PERIOD = 2.5
+PULSE_FLOOR = 0.08  # a pulse's dimmest point, so the LED never looks off
+
+
 @dataclass(frozen=True)
 class LedPattern:
+    """A status on the RGB LED (on/off per colour) and on the WS2812 status LED."""
     colour: tuple[bool, bool, bool]
     flashing: bool = False
+    # (red, green, blue) from 0 to 255, before status_brightness; and its effect.
+    chain_colour: tuple[int, int, int] = (0, 0, 0)
+    chain_effect: str = "solid"  # "solid", "flash" or "pulse"
+
+    def rgb_led(self, now: float) -> tuple[bool, bool, bool]:
+        if self.flashing and now % FLASH_PERIOD >= FLASH_PERIOD / 2:
+            return OFF
+        return self.colour
+
+    def chain(self, now: float) -> tuple[float, float, float]:
+        """The status LED's colour at a moment, each part from 0 to 255."""
+        level = 1.0
+        if self.chain_effect == "flash":
+            level = 1.0 if now % FLASH_PERIOD < FLASH_PERIOD / 2 else 0.0
+        elif self.chain_effect == "pulse":
+            # A sine wave, squared so it looks even to the eye (LEDs look much
+            # brighter at low levels than their duty cycle).
+            wave = (1 - math.cos(2 * math.pi * now / PULSE_PERIOD)) / 2
+            level = PULSE_FLOOR + (1 - PULSE_FLOOR) * wave * wave
+        return tuple(part * level for part in self.chain_colour)  # type: ignore[return-value]
 
 
-BOOTING = LedPattern(BLUE, flashing=True)
-READY = LedPattern(GREEN)
-WAITING_FOR_START = LedPattern(GREEN, flashing=True)
-RUNNING = LedPattern(BLUE)
-CRASHED = LedPattern(RED)
+BOOTING = LedPattern(BLUE, flashing=True, chain_colour=(0, 0, 255), chain_effect="pulse")
+NO_USB = LedPattern(GREEN, chain_colour=(255, 0, 110), chain_effect="flash")
+READY = LedPattern(GREEN, chain_colour=(60, 60, 60))
+WAITING_FOR_START = LedPattern(GREEN, flashing=True, chain_colour=(0, 140, 0),
+                               chain_effect="pulse")
+RUNNING = LedPattern(BLUE, chain_colour=(0, 255, 0))
+CRASHED = LedPattern(RED, chain_colour=(255, 0, 0), chain_effect="flash")
 
 # Sounds are lists of (frequency in Hz, seconds, volume); a frequency or volume of
 # 0 is silence. Volume is the PWM duty cycle in percent: 50 is a passive
@@ -92,6 +125,7 @@ class RobotStatus:
         self.connected = False
         self.astprocd_running = False
         self.code_status: str | None = None
+        self.usb_present = False
         self.waiting_for_start = False
         self.sounds = dict(DEFAULT_SOUNDS)
 
@@ -106,6 +140,7 @@ class RobotStatus:
         with self._lock:
             if topic == ASTPROCD_TOPIC:
                 self.astprocd_running = message.get("status") == "RUNNING"
+                self.usb_present = message.get("disk_info") is not None
                 code_status = message.get("code_status")
                 changed = code_status != self.code_status
                 if changed:
@@ -146,7 +181,9 @@ class RobotStatus:
                 return CRASHED
             if self.code_status in ("code_starting", "code_running"):
                 return WAITING_FOR_START if self.waiting_for_start else RUNNING
-            # No code, finished or killed: ready for the next run.
+            if not self.usb_present:
+                return NO_USB
+            # Finished or killed: ready for the next run.
             return READY
 
 
@@ -324,8 +361,8 @@ class LedChain:
     """
     What the WS2812 chain shows: the status on the first LED (if status_led is on)
     and robot code's colours on the rest. Writes the LEDs when something changes,
-    and again on every status update (twice a second), so LEDs connected or
-    glitched after a change still show the right colours.
+    and again on every status update (20 times a second, for smooth effects), so
+    LEDs connected or glitched after a change still show the right colours.
     """
 
     def __init__(self, strips: list, status_led: bool, status_brightness: float,
@@ -340,10 +377,11 @@ class LedChain:
         self._user = [(0, 0, 0)] * (self.count - 1 if status_led else self.count)
         self._shown: list[tuple[int, int, int]] | None = None
 
-    def set_status(self, colour: tuple[bool, bool, bool]) -> None:
-        level = round(255 * self._status_brightness)
+    def set_status(self, colour: tuple[float, float, float]) -> None:
+        """Set the status LED to (red, green, blue), each from 0 to 255."""
         with self._lock:
-            self._status = tuple(level if lit else 0 for lit in colour)  # type: ignore[assignment]
+            self._status = tuple(  # type: ignore[assignment]
+                round(part * self._status_brightness) for part in colour)
         self._show(refresh=True)
 
     def set_user(self, payload: bytes) -> None:
@@ -605,15 +643,17 @@ def main() -> None:
     print(f"psc-statusd: LED red/green/blue = BCM {pins}, start button = BCM {button['pin']}, "
           f"buzzer = BCM {buzzer_config.get('pin', 13)} ({buzzer_config.get('type', 'passive')})", flush=True)
     try:
-        phase = False
+        shown = None
         while not stop.is_set():
+            now = time.monotonic()
             pattern = status.pattern()
-            phase = not phase
-            colour = pattern.colour if (phase or not pattern.flashing) else OFF
-            GPIO.output(list(pins), [on if lit else off for lit in colour])
+            colour = pattern.rgb_led(now)
+            if colour != shown:
+                GPIO.output(list(pins), [on if lit else off for lit in colour])
+                shown = colour
             if leds is not None:
-                leds.set_status(colour)
-            stop.wait(0.5)
+                leds.set_status(pattern.chain(now))
+            stop.wait(TICK)
     finally:
         client.loop_stop()
         buzzer.close()
