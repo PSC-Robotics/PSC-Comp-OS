@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """PSC Robotics status LED, buzzer and start button service.
 
-Shows the robot's state on an RGB LED, turns presses of a GPIO start button
+Shows the robot's state on a WS2812 LED (and an RGB LED, if one is enabled), turns presses of a GPIO start button
 into the same Astoria start event that the web UI's Start button sends, and
 plays sounds on the buzzer: system sounds, and tones requested by robot code
 through robot.buzzer.
@@ -454,9 +454,13 @@ def open_led_chain(config: dict) -> LedChain | None:
 
 def load_config(path: Path = CONFIG_FILE) -> dict:
     config = tomllib.loads(path.read_text())
-    led, button = config["led"], config["start_button"]
+    led, button = config.setdefault("led", {}), config["start_button"]
+    # The plain RGB status LED is optional: the Brain Board HAT has WS2812s instead.
+    led.setdefault("enabled", False)
+    if not isinstance(led["enabled"], bool):
+        raise ValueError("led.enabled must be true or false")
     for name in ("red", "green", "blue"):
-        if not isinstance(led.get(name), int):
+        if led["enabled"] and not isinstance(led.get(name), int):
             raise ValueError(f"led.{name} must be a BCM pin number")
     if not isinstance(button.get("pin"), int):
         raise ValueError("start_button.pin must be a BCM pin number")
@@ -474,7 +478,7 @@ def load_config(path: Path = CONFIG_FILE) -> dict:
     strip.setdefault("status_led", True)
     strip.setdefault("status_brightness", 0.2)
     strip.setdefault("brightness", 1.0)
-    strip.setdefault("pins", [18, 10])
+    strip.setdefault("pins", [18])
     strip.setdefault("device", "/dev/spidev0.0")
     pins = strip["pins"]
     if not isinstance(pins, list) or not set(pins) <= {10, 18} or len(set(pins)) != len(pins):
@@ -568,7 +572,8 @@ def main() -> None:
 
     config = load_config()
     led, button = config["led"], config["start_button"]
-    pins = (led["red"], led["green"], led["blue"])
+    # The RGB LED's pins, or none if it's not enabled, so robot code can use them.
+    pins = (led["red"], led["green"], led["blue"]) if led["enabled"] else ()
     on, off = (GPIO.HIGH, GPIO.LOW) if led.get("active_high", True) else (GPIO.LOW, GPIO.HIGH)
     status = RobotStatus()
     status.sounds = config["buzzer"]["sounds"]
@@ -576,7 +581,8 @@ def main() -> None:
 
     GPIO.setwarnings(False)
     GPIO.setmode(GPIO.BCM)
-    GPIO.setup(list(pins), GPIO.OUT, initial=off)
+    if pins:
+        GPIO.setup(list(pins), GPIO.OUT, initial=off)
     pull = GPIO.PUD_UP if button.get("pull", "up") == "up" else GPIO.PUD_DOWN
     GPIO.setup(button["pin"], GPIO.IN, pull_up_down=pull)
     buzzer_config = config["buzzer"]
@@ -640,7 +646,8 @@ def main() -> None:
                          config.get("mqtt", {}).get("port", 1883))
     client.loop_start()
 
-    print(f"psc-statusd: LED red/green/blue = BCM {pins}, start button = BCM {button['pin']}, "
+    rgb = f"BCM {pins}" if pins else "off"
+    print(f"psc-statusd: RGB LED red/green/blue = {rgb}, start button = BCM {button['pin']}, "
           f"buzzer = BCM {buzzer_config.get('pin', 13)} ({buzzer_config.get('type', 'passive')})", flush=True)
     try:
         shown = None
@@ -648,7 +655,7 @@ def main() -> None:
             now = time.monotonic()
             pattern = status.pattern()
             colour = pattern.rgb_led(now)
-            if colour != shown:
+            if pins and colour != shown:
                 GPIO.output(list(pins), [on if lit else off for lit in colour])
                 shown = colour
             if leds is not None:
@@ -659,7 +666,8 @@ def main() -> None:
         buzzer.close()
         if leds is not None:
             leds.close()
-        GPIO.output(list(pins), off)
+        if pins:
+            GPIO.output(list(pins), off)
         GPIO.cleanup()
 
 

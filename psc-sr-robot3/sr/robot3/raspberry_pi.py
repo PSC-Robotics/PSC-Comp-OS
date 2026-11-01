@@ -3,26 +3,29 @@ from __future__ import annotations
 
 import atexit
 import logging
+import sys
 import time
+from pathlib import Path
 from types import ModuleType
 from typing import Callable, Optional
 
+from .leds import STATUS_CONFIG
 from .logging import log_to_debug
 from .pin_motors import DCMotor, Stepper, register_driven_pins
 
+if sys.version_info >= (3, 11):
+    import tomllib
+else:
+    import tomli as tomllib
+
 LOGGER = logging.getLogger(__name__)
 
-# Pins the robot itself uses: the status LED (17, 27, 22), the start button (5),
-# the buzzer (13), the serial port for bus servos (14, 15) and the WS2812 LED
-# chain (data on 18 by PWM and on 10 by SPI; 7, 8, 9 and 11 also belong to SPI).
-# Pins 0 and 1 are reserved for the HAT EEPROM.
-RESERVED_PINS = {0: "HAT EEPROM", 1: "HAT EEPROM", 5: "the start button", 13: "the buzzer",
-                 7: "the LED strip's SPI port", 8: "the LED strip's SPI port",
-                 9: "the LED strip's SPI port", 10: "the LED strip (WS2812 data)",
-                 11: "the LED strip's SPI port",
-                 14: "the serial port (bus servos)", 15: "the serial port (bus servos)",
-                 17: "the status LED", 18: "the LED strip (WS2812 data)",
-                 22: "the status LED", 27: "the status LED"}
+# Pins the robot always uses: the HAT EEPROM (0, 1) and the serial port for bus
+# servos (14, 15). The rest come from the status service's config: see reserved_pins.
+FIXED_RESERVED_PINS = {0: "HAT EEPROM", 1: "HAT EEPROM",
+                       14: "the serial port (bus servos)", 15: "the serial port (bus servos)"}
+# Besides MOSI (GPIO 10), the SPI port also takes these pins.
+SPI_PINS = (7, 8, 9, 11)
 MIN_STEP_DELAY_US = 50
 DEFAULT_STEP_DELAY_US = 1000
 MAX_STEP_DELAY_US = 1_000_000
@@ -31,6 +34,45 @@ STEP_PULSE_US = 5  # comfortably above the 1-2us minimum of common drivers
 DIRECTION_SETUP_US = 5
 # Software PWM frequency for DC motor drivers. The DRV8871 accepts up to 200kHz.
 DC_MOTOR_PWM_HZ = 1000
+
+
+def reserved_pins(config_file: Path = STATUS_CONFIG) -> dict[int, str]:
+    """
+    The pins the robot itself uses, so robot code can't, and what uses each, from
+    the status service's config: the start button, the buzzer, the RGB status LED
+    (only if it is enabled) and the WS2812 LED chain's data pins (with the rest of
+    the SPI port if GPIO 10 is one). Missing settings take the service's defaults.
+    """
+    try:
+        config = tomllib.loads(config_file.read_text())
+    except (OSError, ValueError):
+        config = {}
+
+    def section(name: str) -> dict:
+        value = config.get(name, {})
+        return value if isinstance(value, dict) else {}
+
+    pins = dict(FIXED_RESERVED_PINS)
+
+    def reserve(pin: object, user: str) -> None:
+        if isinstance(pin, int) and not isinstance(pin, bool) and 0 <= pin <= 27:
+            pins[pin] = user
+
+    reserve(section('start_button').get('pin', 5), "the start button")
+    reserve(section('buzzer').get('pin', 13), "the buzzer")
+    led = section('led')
+    if led.get('enabled', False) is True:
+        for colour in ('red', 'green', 'blue'):
+            reserve(led.get(colour), "the status LED")
+    strip = section('led_strip')
+    if strip.get('enabled', True) is True and strip.get('count', 2) != 0:
+        strip_pins = strip.get('pins', [18])
+        for pin in strip_pins if isinstance(strip_pins, list) else []:
+            reserve(pin, "the LED strip (WS2812 data)")
+            if pin == 10:
+                for spi_pin in SPI_PINS:
+                    reserve(spi_pin, "the LED strip's SPI port")
+    return pins
 
 
 def _load_gpio() -> ModuleType:
@@ -54,10 +96,12 @@ class RaspberryPi:
     :param gpio_loader: Returns the RPi.GPIO module; replaced in tests.
     :param clock_ns: A monotonic clock in nanoseconds; replaced in tests.
     :param leds: The user LEDs (LED_A to LED_C).
+    :param reserved: Pins robot code can't use, and what uses each; read from the
+        status service's config if not given.
     """
     __slots__ = (
         '_gpio', '_gpio_loader', '_clock_ns', '_pin_modes', '_pwms', '_motors', '_claims',
-        '_leds',
+        '_leds', '_reserved',
     )
 
     def __init__(
@@ -65,8 +109,10 @@ class RaspberryPi:
         gpio_loader: Callable[[], ModuleType] = _load_gpio,
         clock_ns: Callable[[], int] = time.perf_counter_ns,
         leds: tuple = (),
+        reserved: Optional[dict[int, str]] = None,
     ) -> None:
         self._leds = leds
+        self._reserved = reserved_pins() if reserved is None else reserved
         self._gpio: Optional[ModuleType] = None
         self._gpio_loader = gpio_loader
         self._clock_ns = clock_ns
@@ -111,12 +157,11 @@ class RaspberryPi:
             self._gpio.cleanup(sorted(self._pin_modes))
             self._pin_modes.clear()
 
-    @staticmethod
-    def _check_pin(pin: int, name: str) -> int:
+    def _check_pin(self, pin: int, name: str) -> int:
         if not isinstance(pin, int) or isinstance(pin, bool) or not 0 <= pin <= 27:
             raise ValueError(f"{name} must be a BCM GPIO number from 2 to 27")
-        if pin in RESERVED_PINS:
-            raise ValueError(f"GPIO {pin} is used by {RESERVED_PINS[pin]}")
+        if pin in self._reserved:
+            raise ValueError(f"GPIO {pin} is used by {self._reserved[pin]}")
         return pin
 
     def _wait_until(self, deadline_ns: int) -> None:

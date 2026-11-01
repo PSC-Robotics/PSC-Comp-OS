@@ -1,11 +1,15 @@
 import json
 import types
+from pathlib import Path
 
 import pytest
 
 from sr.robot3 import Note
 from sr.robot3.buzzer import BUZZER_TOPIC, Buzzer
-from sr.robot3.raspberry_pi import RaspberryPi
+from sr.robot3.raspberry_pi import RaspberryPi, reserved_pins
+
+# The pins the robot uses with the status service's default settings.
+DEFAULT_RESERVED = reserved_pins(Path('/nonexistent/psc-status.toml'))
 
 
 class FakeMQTT:
@@ -95,7 +99,8 @@ class FakeClock:
 def make_pi():
     clock = FakeClock()
     gpio = FakeGPIO(clock)
-    return RaspberryPi(gpio_loader=lambda: gpio, clock_ns=clock), gpio
+    pi = RaspberryPi(gpio_loader=lambda: gpio, clock_ns=clock, reserved=DEFAULT_RESERVED)
+    return pi, gpio
 
 
 def test_stepper_pulses_step_pin_with_direction_and_spacing(monkeypatch) -> None:
@@ -118,7 +123,7 @@ def test_stepper_pulses_step_pin_with_direction_and_spacing(monkeypatch) -> None
 @pytest.mark.parametrize(
     ("kwargs", "message"),
     [
-        (dict(step_pin=17, direction_pin=24, steps=1), "status LED"),
+        (dict(step_pin=13, direction_pin=24, steps=1), "buzzer"),
         (dict(step_pin=23, direction_pin=5, steps=1), "start button"),
         (dict(step_pin=13, direction_pin=24, steps=1), "buzzer"),
         (dict(step_pin=28, direction_pin=24, steps=1), "BCM GPIO number"),

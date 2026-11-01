@@ -79,13 +79,13 @@ buzzer type are set in `/etc/psc-status.toml`:
 
 | Signal | BCM | Header pin |
 | --- | --- | --- |
-| LED blue | 17 | 11 |
-| LED green | 27 | 13 |
-| LED red | 22 | 15 |
+| RGB LED blue (optional, off by default) | 17 | 11 |
+| RGB LED green (optional, off by default) | 27 | 13 |
+| RGB LED red (optional, off by default) | 22 | 15 |
 | Start button | 5 | 29 |
 | Buzzer (passive) | 13 | 33 |
 | WS2812 LED chain (data in, Brain Board HAT) | 18 | 12 |
-| WS2812 LED chain (data in, alternative) | 10 | 19 |
+| WS2812 LED chain (data in, alternative; off by default) | 10 | 19 |
 
 | State | RGB LED | WS2812 status LED |
 | --- | --- | --- |
@@ -124,7 +124,7 @@ also takes GPIO 7, 8, 9 and 11). Robot code can't use any of these pins. Set the
 not from power-on. The Pi's 3.3V data usually works; if colours flicker, add a
 74AHCT125 level shifter on DIN.
 
-The LED is common-cathode (`active_high = true`). Wire the start button between
+The plain RGB LED is off by default (`[led] enabled = false`), as the Brain Board HAT's first WS2812 is the status LED; robot code can then use GPIO 17, 22 and 27. `sr.robot3` reads `/etc/psc-status.toml` to decide which pins robot code can't use: the start button, the buzzer, the RGB LED if enabled, and the LED chain's pins (GPIO 7 to 11 only if `pins` includes 10), plus 14/15 (serial) and 0/1 (HAT EEPROM). The default chain is `pins = [18]`. When enabled, the LED is common-cathode (`active_high = true`). Wire the start button between
 GPIO 5 and GND; the internal pull-up is enabled. Never connect a GPIO pin to
 5V. A press sends the same start event as the web UI's Start button. If the
 pins change, also update the `gpio=` lines in `/boot/config.txt`.

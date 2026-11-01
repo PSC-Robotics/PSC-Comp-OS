@@ -3,19 +3,20 @@ set -eux -o pipefail
 
 # PSC status LED and start button service. It replaces the Student Robotics
 # kchd and boot_40 units: those drive the SR KCH hat's pins, which on the PSC
-# robot are wired to the status LED (BCM 17/22/27) and start button (BCM 5).
+# robot are free for robot code or wired to the start button (BCM 5).
 install -o root -g root -m 755 /tmp/packer/status/psc-statusd.py /usr/local/lib/psc-statusd.py
 install -o root -g root -m 644 /tmp/packer/status/psc-status.toml /etc/psc-status.toml
 install -o root -g root -m 644 /tmp/packer/status/psc-statusd.service /usr/lib/systemd/system/psc-statusd.service
 systemctl enable psc-statusd.service
 
-# Set the pins up in the firmware so the LED shows blue (booting) from power-on,
-# before Linux starts, and the start button input has its pull-up straight away.
+# Set the pins up in the firmware so the buzzer is silent from power-on, before
+# Linux starts, and the start button input has its pull-up straight away. The
+# optional RGB status LED's pins (17, 22, 27) are left alone: it's off by default
+# and robot code can use them.
 cat << 'CONFIG' >> /boot/config.txt
 
-# PSC status LED (blue on while booting), silent buzzer and start button
-gpio=17=op,dh
-gpio=13,22,27=op,dl
+# PSC silent buzzer and start button
+gpio=13=op,dl
 gpio=5=ip,pu
 
 # SPI for the WS2812 LED chain on GPIO 10 (header pin 19)

@@ -1,8 +1,12 @@
 # PSC Robotics status LED, buzzer and start button (BCM GPIO numbers, not header pins).
-# After changing pins, also update the gpio= lines in /boot/config.txt that
-# light the LED blue from power-on and keep the buzzer silent while booting.
+# After changing the buzzer or start button pin, also update the gpio= lines in
+# /boot/config.txt that keep the buzzer silent while booting. Robot code can't use
+# the pins set here (sr.robot3 reads this file), so restart its code after editing.
 
+# A plain RGB status LED. Off by default: the Brain Board HAT's first WS2812 LED
+# is the status LED. When it's off, robot code can use these three pins.
 [led]
+enabled = false
 red = 22     # header pin 15
 green = 27   # header pin 13
 blue = 17    # header pin 11
@@ -18,7 +22,8 @@ active_high = true
 [led_strip]
 enabled = true
 count = 2                # LEDs in the chain, including the status LED (up to 320)
-pins = [18, 10]          # the same data is sent on both: 18 by PWM, 10 by SPI
+pins = [18]              # 18 by PWM (the HAT); add 10 to also send it by SPI,
+                         # which also takes GPIO 7, 8, 9 and 11 from robot code
 status_led = true        # false: robot code controls every LED, including the first
 status_brightness = 0.2  # 0 to 1; the status LED at full brightness is dazzling
 brightness = 1.0         # 0 to 1, scales the colours robot code sets
