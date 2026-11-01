@@ -39,9 +39,9 @@ DC_MOTOR_PWM_HZ = 1000
 def reserved_pins(config_file: Path = STATUS_CONFIG) -> dict[int, str]:
     """
     The pins the robot itself uses, so robot code can't, and what uses each, from
-    the status service's config: the start button, the buzzer, the RGB status LED
-    (only if it is enabled) and the WS2812 LED chain's data pins (with the rest of
-    the SPI port if GPIO 10 is one). Missing settings take the service's defaults.
+    the status service's config: the start button, the buzzer and the WS2812 LED
+    chain's data pins (with the rest of the SPI port if GPIO 10 is one). Missing
+    settings take the service's defaults.
     """
     try:
         config = tomllib.loads(config_file.read_text())
@@ -60,10 +60,6 @@ def reserved_pins(config_file: Path = STATUS_CONFIG) -> dict[int, str]:
 
     reserve(section('start_button').get('pin', 5), "the start button")
     reserve(section('buzzer').get('pin', 13), "the buzzer")
-    led = section('led')
-    if led.get('enabled', False) is True:
-        for colour in ('red', 'green', 'blue'):
-            reserve(led.get(colour), "the status LED")
     strip = section('led_strip')
     if strip.get('enabled', True) is True and strip.get('count', 2) != 0:
         strip_pins = strip.get('pins', [18])

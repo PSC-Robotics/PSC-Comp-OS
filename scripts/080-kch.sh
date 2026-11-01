@@ -10,9 +10,7 @@ install -o root -g root -m 644 /tmp/packer/status/psc-statusd.service /usr/lib/s
 systemctl enable psc-statusd.service
 
 # Set the pins up in the firmware so the buzzer is silent from power-on, before
-# Linux starts, and the start button input has its pull-up straight away. The
-# optional RGB status LED's pins (17, 22, 27) are left alone: it's off by default
-# and robot code can use them.
+# Linux starts, and the start button input has its pull-up straight away.
 cat << 'CONFIG' >> /boot/config.txt
 
 # PSC silent buzzer and start button

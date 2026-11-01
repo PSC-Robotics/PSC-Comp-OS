@@ -73,28 +73,25 @@ journalctl -u nginx -u psc-camera-calibration
 
 ## Status LED, Buzzer And Start Button
 
-`psc-statusd` shows the robot's state on an RGB LED, plays sounds on a buzzer
-and handles a physical start button. The pins (BCM numbers), LED polarity and
-buzzer type are set in `/etc/psc-status.toml`:
+`psc-statusd` shows the robot's state on the first LED of a WS2812 ("NeoPixel")
+chain, plays sounds on a buzzer and handles a physical start button. The pins
+(BCM numbers), the LED chain and the buzzer type are set in `/etc/psc-status.toml`:
 
 | Signal | BCM | Header pin |
 | --- | --- | --- |
-| RGB LED blue (optional, off by default) | 17 | 11 |
-| RGB LED green (optional, off by default) | 27 | 13 |
-| RGB LED red (optional, off by default) | 22 | 15 |
-| Start button | 5 | 29 |
-| Buzzer (passive) | 13 | 33 |
 | WS2812 LED chain (data in, Brain Board HAT) | 18 | 12 |
 | WS2812 LED chain (data in, alternative; off by default) | 10 | 19 |
+| Start button | 5 | 29 |
+| Buzzer | 13 | 33 |
 
-| State | RGB LED | WS2812 status LED |
-| --- | --- | --- |
-| Booting | Blue, flashing (solid blue from power-on until the service starts) | Blue, pulsing |
-| No code USB plugged in | Green | Pink, flashing |
-| Waiting for the start button | Green, flashing | Green, pulsing slowly (dim) |
-| Robot code running | Blue | Green |
-| Robot code finished or stopped | Green | White (dim) |
-| Robot code crashed | Red | Red, flashing |
+| State | Status LED |
+| --- | --- |
+| Booting | Blue, pulsing |
+| No code USB plugged in | Pink, flashing |
+| Waiting for the start button | Green, pulsing slowly (dim) |
+| Robot code running | Green |
+| Robot code finished or stopped | White (dim) |
+| Robot code crashed | Red, flashing |
 
 | Sound | Meaning |
 | --- | --- |
@@ -111,27 +108,27 @@ play them over MQTT (`psc/buzzer`), so only one process drives the buzzer pin.
 The buzzer is silenced whenever robot code is not running, so a tone left
 playing stops when the code finishes, crashes or is killed.
 
-A chain of WS2812 ("NeoPixel") LEDs can be used as well as, or instead of, the
-RGB LED. Wire the first LED's DIN to GPIO 18 (as on the Brain Board HAT) or
-GPIO 10, VDD to 5V and GND to GND, and each LED's DOUT to the next one's DIN. The
-first LED shows the status (see the table above); robot code sets the rest with
-`robot.leds[0] = (255, 0, 0)`, over MQTT (`psc/leds`), and they turn off when the
-code stops. `psc-statusd` sends the same data on both pins: GPIO 18 through the
-PWM hardware (`rpi_ws281x`; the analogue audio output is turned off, as it also
-uses the PWM hardware) and GPIO 10 through the SPI port (`dtparam=spi=on`, which
-also takes GPIO 7, 8, 9 and 11). Robot code can't use any of these pins. Set the number of LEDs under `[led_strip]` in `/etc/psc-status.toml`
-(default 2). Unlike the RGB LED, the chain lights only once `psc-statusd` starts,
-not from power-on. The Pi's 3.3V data usually works; if colours flicker, add a
-74AHCT125 level shifter on DIN.
+Wire the first LED's DIN to GPIO 18 (as on the Brain Board HAT), VDD to 5V and
+GND to GND, and each LED's DOUT to the next one's DIN. Robot code sets the LEDs
+after the status LED with `robot.raspberry_pi.leds[LED_A].colour = Colour.RED`
+(as on Student Robotics' KCH board) or `robot.leds[0] = (255, 0, 0)`, over MQTT
+(`psc/leds`), and they turn off when the code stops. GPIO 18 is driven through
+the PWM hardware (`rpi_ws281x`; the analogue audio output is turned off, as it
+also uses the PWM hardware). Add 10 to `pins` under `[led_strip]` to also send
+the data on GPIO 10 through the SPI port (`dtparam=spi=on`); that also takes GPIO
+7, 8, 9 and 11. Set the number of LEDs with `count` (default 2). The chain lights
+once `psc-statusd` starts, 10 to 20 seconds after power-on. The Pi's 3.3V data
+usually works; if colours flicker, add a level shifter on DIN.
 
-The plain RGB LED is off by default (`[led] enabled = false`), as the Brain Board HAT's first WS2812 is the status LED; robot code can then use GPIO 17, 22 and 27. `sr.robot3` reads `/etc/psc-status.toml` to decide which pins robot code can't use: the start button, the buzzer, the RGB LED if enabled, and the LED chain's pins (GPIO 7 to 11 only if `pins` includes 10), plus 14/15 (serial) and 0/1 (HAT EEPROM). The default chain is `pins = [18]`. When enabled, the LED is common-cathode (`active_high = true`). Wire the start button between
-GPIO 5 and GND; the internal pull-up is enabled. Never connect a GPIO pin to
-5V. A press sends the same start event as the web UI's Start button. If the
-pins change, also update the `gpio=` lines in `/boot/config.txt`.
+`sr.robot3` reads `/etc/psc-status.toml` to decide which pins robot code can't
+use: the start button, the buzzer and the LED chain's pins, plus 14/15 (serial,
+for bus servos) and 0/1 (HAT EEPROM). Wire the start button between GPIO 5 and
+GND; the internal pull-up is enabled. Never connect a GPIO pin to 5V. A press
+sends the same start event as the web UI's Start button.
 
 The Student Robotics `kchd` and `boot_40` services are not installed because
 they drive the KCH hat's pins, and robot code runs with `SR_KCH_HAT=0` so the
-API's `robot.kch` LEDs leave these pins alone.
+API's `robot.kch` LEDs use the WS2812 chain instead of those pins.
 
 ```sh
 systemctl status psc-statusd

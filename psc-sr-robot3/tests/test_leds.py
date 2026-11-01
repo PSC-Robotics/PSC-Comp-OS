@@ -94,17 +94,16 @@ def test_reserved_pins_follow_the_status_config(tmp_path) -> None:
     from sr.robot3.raspberry_pi import reserved_pins
     path = tmp_path / "psc-status.toml"
 
-    # Defaults (the Brain Board HAT): no RGB LED, the LED chain on GPIO 18 only.
+    # Defaults (the Brain Board HAT): the LED chain on GPIO 18 only.
     assert sorted(reserved_pins(path)) == [0, 1, 5, 13, 14, 15, 18]
 
     path.write_text(
-        "[led]\nenabled = true\nred = 22\ngreen = 27\nblue = 17\n"
         "[led_strip]\npins = [18, 10]\n[start_button]\npin = 6\n[buzzer]\npin = 12\n")
     pins = reserved_pins(path)
-    assert sorted(pins) == [0, 1, 6, 7, 8, 9, 10, 11, 12, 14, 15, 17, 18, 22, 27]
-    assert pins[17] == "the status LED" and pins[8] == "the LED strip's SPI port"
+    assert sorted(pins) == [0, 1, 6, 7, 8, 9, 10, 11, 12, 14, 15, 18]
+    assert pins[8] == "the LED strip's SPI port"
 
-    path.write_text("[led]\nenabled = false\nred = 22\n[led_strip]\nenabled = false\n")
+    path.write_text("[led_strip]\nenabled = false\n")
     assert sorted(reserved_pins(path)) == [0, 1, 5, 13, 14, 15]
     path.write_text("not toml [")
     assert sorted(reserved_pins(path)) == [0, 1, 5, 13, 14, 15, 18]
