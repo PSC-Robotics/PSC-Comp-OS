@@ -1,0 +1,8 @@
+{
+    "mode": "COMP",
+    "zone": 2,
+    "arena": "A",
+    "game_timeout": 180,
+    "wifi_enabled": false,
+    "bluetooth_enabled": true
+}
