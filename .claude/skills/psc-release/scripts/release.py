@@ -27,7 +27,8 @@ SECRETS = re.compile(
 
 
 def run(*command: str, check: bool = True, capture: bool = True) -> str:
-    result = subprocess.run(command, check=False, capture_output=capture, text=True)
+    result = subprocess.run(
+        command, check=False, capture_output=capture, text=True, errors="replace")
     if check and result.returncode != 0:
         sys.exit(f"Failed: {' '.join(command)}\n{result.stderr.strip()}")
     return (result.stdout or "").strip()
