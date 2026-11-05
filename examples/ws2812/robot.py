@@ -7,7 +7,7 @@ Wiring (header pin numbers in brackets):
     First LED (the status LED)    Raspberry Pi
       VDD / 5V                 -> 5V      (pin 2 or 4)
       GND                      -> GND     (pin 6)
-      DIN                      -> GPIO 18 (pin 12), or GPIO 10 (pin 19)
+      DIN                      -> GPIO 18 (pin 12)
 
     Second LED (LED_A): DIN -> the first LED's DOUT, and 5V and GND as above.
 
