@@ -24,6 +24,10 @@ robot = Robot()  # Waits here until the start button is pressed
 
 servo = robot.raspberry_pi.servos[0]
 
+# To use other pins, give them here. This makes an I2C bus on those pins:
+# driver = robot.raspberry_pi.servo_driver(sda=23, scl=24)
+# servo = driver.servos[0]
+
 for _ in range(3):
     for position in (-1, 0, 1, 0):
         print(f"Position {position}")

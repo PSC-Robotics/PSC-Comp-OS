@@ -6,6 +6,7 @@ import ctypes
 import errno
 import logging
 import os
+import threading
 import time
 from collections.abc import Iterable, Sequence
 from typing import Any, Callable, Optional, Union
@@ -35,6 +36,11 @@ WIRING_HELP = (
     "Check SDA is on GPIO 2 (header pin 3), SCL is on GPIO 3 (header pin 5), "
     "and the device has power and shares a ground with the Pi."
 )
+
+# Buses on other GPIO pins are driven in software, at up to 100kHz.
+SOFTWARE_HALF_PERIOD_NS = 5_000
+# How long a device may hold the clock low to make the Pi wait.
+CLOCK_STRETCH_TIMEOUT_NS = 25_000_000
 
 DEFAULT_SERVO_DRIVER_ADDRESS = 0x40
 NUM_DRIVER_SERVOS = 16
@@ -122,6 +128,10 @@ class I2CBus:
         self._fd: Optional[int] = None
         self._devices: dict[int, I2CDevice] = {}
 
+    @property
+    def _wiring_help(self) -> str:
+        return WIRING_HELP
+
     def _open(self) -> int:
         if self._fd is not None:
             return self._fd
@@ -187,7 +197,7 @@ class I2CBus:
         if error.errno not in NO_REPLY_ERRORS:
             return I2CError(
                 f"The I2C bus failed while talking to {address:#04x}: {error.strerror}. "
-                f"SDA or SCL may be shorted or loose. {WIRING_HELP}"
+                f"SDA or SCL may be shorted or loose. {self._wiring_help}"
             )
         try:
             found = self._find_devices()
@@ -201,7 +211,7 @@ class I2CBus:
             )
         return I2CError(
             f"No I2C device replied at address {address:#04x}, and none were found on "
-            f"the bus. {WIRING_HELP}"
+            f"the bus. {self._wiring_help}"
         )
 
     def _find_devices(self) -> list[int]:
@@ -232,7 +242,7 @@ class I2CBus:
             raise
         except OSError as error:
             raise I2CError(
-                f"The I2C bus failed during a scan: {error.strerror}. {WIRING_HELP}"
+                f"The I2C bus failed during a scan: {error.strerror}. {self._wiring_help}"
             ) from error
 
     @log_to_debug
@@ -260,6 +270,153 @@ class I2CBus:
 
     def __repr__(self) -> str:
         return f"<{self.__class__.__qualname__} {self._path}>"
+
+
+class SoftwareI2CBus(I2CBus):
+    """
+    An I2C bus on any two free GPIO pins, driven in software.
+
+    Get one with ``robot.raspberry_pi.i2c_bus(sda, scl)``. It works like the main bus,
+    but more slowly, which doesn't matter to most devices. Each device needs the same
+    wiring as on the main bus, and addresses only have to differ within one bus.
+
+    The lines are never driven high: a pin is released and pulled up to send a 1, which
+    is how I2C lets several devices share a wire.
+
+    :param gpio: The RPi.GPIO module, already in BCM mode.
+    :param sda: The BCM GPIO number of the data pin.
+    :param scl: The BCM GPIO number of the clock pin.
+    :param clock_ns: A monotonic clock in nanoseconds; replaced in tests.
+    """
+    __slots__ = ('_gpio', '_sda', '_scl', '_clock_ns', '_lock')
+
+    def __init__(
+        self, gpio: Any, sda: int, scl: int,
+        clock_ns: Callable[[], int] = time.perf_counter_ns,
+    ) -> None:
+        super().__init__()
+        self._gpio = gpio
+        self._sda = sda
+        self._scl = scl
+        self._clock_ns = clock_ns
+        self._lock = threading.Lock()
+        self._release(sda)
+        self._release(scl)
+
+    @property
+    def _wiring_help(self) -> str:
+        return (
+            f"Check SDA is on GPIO {self._sda}, SCL is on GPIO {self._scl}, "
+            "and the device has power and shares a ground with the Pi."
+        )
+
+    def _release(self, pin: int) -> None:
+        self._gpio.setup(pin, self._gpio.IN, pull_up_down=self._gpio.PUD_UP)
+
+    def _drive_low(self, pin: int) -> None:
+        self._gpio.setup(pin, self._gpio.OUT, initial=self._gpio.LOW)
+
+    def _wait(self) -> None:
+        deadline = self._clock_ns() + SOFTWARE_HALF_PERIOD_NS
+        while self._clock_ns() < deadline:
+            pass
+
+    def _release_scl(self) -> None:
+        self._release(self._scl)
+        deadline = self._clock_ns() + CLOCK_STRETCH_TIMEOUT_NS
+        while not self._gpio.input(self._scl):
+            if self._clock_ns() > deadline:
+                raise OSError(errno.ETIMEDOUT, "SCL is being held low")
+        self._wait()
+
+    def _clock_low(self) -> None:
+        self._drive_low(self._scl)
+        self._wait()
+
+    def _set_sda(self, high: bool) -> None:
+        if high:
+            self._release(self._sda)
+        else:
+            self._drive_low(self._sda)
+        self._wait()
+
+    def _start(self) -> None:
+        # Also works as a repeated start, between a write and a read.
+        self._set_sda(True)
+        self._release_scl()
+        self._set_sda(False)
+        self._clock_low()
+
+    def _stop(self) -> None:
+        self._set_sda(False)
+        self._release_scl()
+        self._set_sda(True)
+
+    def _make_ready(self) -> None:
+        self._set_sda(True)
+        self._release_scl()
+        if self._gpio.input(self._sda):
+            return
+        # A device stopped part way through a byte, such as when code was killed during
+        # a transfer, keeps holding SDA low. Clocking it out of the byte frees it.
+        for _ in range(9):
+            self._clock_low()
+            self._release_scl()
+            if self._gpio.input(self._sda):
+                break
+        self._clock_low()
+        self._stop()
+        if not self._gpio.input(self._sda):
+            raise OSError(errno.ETIMEDOUT, "SDA is being held low")
+
+    def _write_byte(self, value: int) -> bool:
+        for bit in range(7, -1, -1):
+            self._set_sda(bool(value >> bit & 1))
+            self._release_scl()
+            self._clock_low()
+        self._set_sda(True)
+        self._release_scl()
+        acknowledged = not self._gpio.input(self._sda)
+        self._clock_low()
+        return acknowledged
+
+    def _read_byte(self, acknowledge: bool) -> int:
+        self._set_sda(True)
+        value = 0
+        for _ in range(8):
+            self._release_scl()
+            value = value << 1 | (1 if self._gpio.input(self._sda) else 0)
+            self._clock_low()
+        self._set_sda(not acknowledge)
+        self._release_scl()
+        self._clock_low()
+        return value
+
+    def _raw_transfer(self, address: int, *messages: Union[bytes, int]) -> list[bytes]:
+        no_reply = OSError(EREMOTEIO, "Remote I/O error")
+        results = []
+        with self._lock:
+            self._make_ready()
+            try:
+                for part in messages:
+                    self._start()
+                    if isinstance(part, bytes):
+                        if not self._write_byte(address << 1):
+                            raise no_reply
+                        for value in part:
+                            if not self._write_byte(value):
+                                raise no_reply
+                    else:
+                        if not self._write_byte(address << 1 | 1):
+                            raise no_reply
+                        results.append(bytes(
+                            self._read_byte(index < part - 1) for index in range(part)))
+            finally:
+                self._stop()
+        return results
+
+    def __repr__(self) -> str:
+        return f"<{self.__class__.__qualname__} SDA=GPIO {self._sda} SCL=GPIO {self._scl}>"
 
 
 class I2CDevice:

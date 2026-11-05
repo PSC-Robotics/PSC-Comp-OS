@@ -148,6 +148,11 @@ address 0x40, with positions from -1 to 1 as on Student Robotics' servo board. U
 `I2CError`, with a message saying what to check. See `examples/pca9685` and
 `examples/i2c`.
 
+`robot.raspberry_pi.i2c_bus(sda=23, scl=24)` makes another bus on any two free pins,
+and `servo_driver(sda=23, scl=24)` makes one for a driver. These buses are driven in
+software through RPi.GPIO (`SoftwareI2CBus`), so they need no boot config, and
+addresses only have to differ within one bus. A pin can only belong to one bus or motor.
+
 A power board is optional. `robot.power_board` raises an error if there isn't one,
 and nothing is logged otherwise.
 

@@ -3,6 +3,7 @@ import atexit
 import ctypes
 import errno
 import struct
+import types
 
 import pytest
 
@@ -366,3 +367,344 @@ def test_i2c_pins_are_reserved():
         pi.dc_motor(2, 4)
     with pytest.raises(ValueError, match="GPIO 3 is used by I2C"):
         pi.stepper(4, 3)
+
+
+class FakeChip:
+    """An I2C chip with registers, seen only through its effect on the two wires."""
+
+    def __init__(self, address, stretch=0):
+        self.address = address
+        self.registers = {}
+        self.pointer = 0
+        self.stretch = stretch
+        self.holding_sda = False
+        self.state = 'idle'
+        self.byte = 0
+        self.bits = 0
+        self.first = True
+        self.received_stops = 0
+
+    def start(self):
+        self.state, self.byte, self.bits = 'address', 0, 0
+        self.holding_sda = False
+
+    def stop(self):
+        self.state = 'idle'
+        self.holding_sda = False
+        self.received_stops += 1
+
+    def clock_rising(self, sda):
+        if self.state in ('address', 'write'):
+            self.byte = self.byte << 1 | sda
+            self.bits += 1
+        elif self.state == 'master_ack':
+            self.state = 'send_next' if not sda else 'idle'
+
+    def clock_falling(self):
+        if self.state in ('address', 'write') and self.bits == 8:
+            self._byte_received()
+        elif self.state == 'ack_write':
+            self.holding_sda = False
+            self.state, self.byte, self.bits = 'write', 0, 0
+        elif self.state == 'ack_read':
+            self._send_bit(new_byte=True)
+        elif self.state == 'send':
+            self._send_bit()
+        elif self.state == 'send_next':
+            self._send_bit(new_byte=True)
+        elif self.state == 'idle':
+            self.holding_sda = False
+
+    def _byte_received(self):
+        if self.state == 'address':
+            if self.byte >> 1 != self.address:
+                self.state = 'idle'
+                return
+            self.state = 'ack_read' if self.byte & 1 else 'ack_write'
+            self.first = True
+        else:
+            if self.first:
+                self.pointer = self.byte
+                self.first = False
+            else:
+                self.registers[self.pointer] = self.byte
+                self.pointer += 1
+            self.state = 'ack_write'
+        self.holding_sda = True
+
+    def _send_bit(self, new_byte=False):
+        if new_byte:
+            self.byte = self.registers.get(self.pointer, 0)
+            self.pointer += 1
+            self.bits = 0
+            self.state = 'send'
+        if self.bits == 8:
+            self.holding_sda = False
+            self.state = 'master_ack'
+            return
+        self.holding_sda = not self.byte >> (7 - self.bits) & 1
+        self.bits += 1
+
+
+class FakeWireGPIO:
+    """RPi.GPIO on open-drain wires, where a line is low if anything pulls it low."""
+    BCM, IN, OUT, LOW, HIGH, PUD_UP = "BCM", "IN", "OUT", 0, 1, "PUD_UP"
+
+    def __init__(self):
+        self.buses = []
+        self.low = set()
+        self.setups = []
+        self.cleaned = []
+        self.drove_high = False
+
+    def add_bus(self, sda, scl, chips):
+        self.buses.append({'sda': sda, 'scl': scl, 'chips': chips, 'levels': (1, 1)})
+
+    def setwarnings(self, flag):
+        pass
+
+    def setmode(self, mode):
+        pass
+
+    def cleanup(self, pins):
+        self.cleaned.extend(pins)
+
+    def PWM(self, pin, frequency):
+        return types.SimpleNamespace(start=lambda duty: None, stop=lambda: None,
+                                     ChangeDutyCycle=lambda duty: None)
+
+    def setup(self, pin, mode, initial=None, pull_up_down=None):
+        self.setups.append(pin)
+        if mode == self.OUT:
+            if initial != self.LOW:
+                self.drove_high = True
+            self.low.add(pin)
+        else:
+            assert pull_up_down == self.PUD_UP
+            self.low.discard(pin)
+        self._update()
+
+    def _level(self, bus, pin):
+        if pin in self.low:
+            return 0
+        if pin == bus['sda'] and any(chip.holding_sda for chip in bus['chips']):
+            return 0
+        if pin == bus['scl'] and any(chip.stretch > 0 for chip in bus['chips']):
+            return 0
+        return 1
+
+    def _update(self):
+        for bus in self.buses:
+            old_sda, old_scl = bus['levels']
+            sda, scl = self._level(bus, bus['sda']), self._level(bus, bus['scl'])
+            bus['levels'] = (sda, scl)
+            for chip in bus['chips']:
+                if old_scl and scl and old_sda and not sda:
+                    chip.start()
+                elif old_scl and scl and not old_sda and sda:
+                    chip.stop()
+                elif not old_scl and scl:
+                    chip.clock_rising(sda)
+                elif old_scl and not scl:
+                    chip.clock_falling()
+            bus['levels'] = (self._level(bus, bus['sda']), scl)
+
+    def input(self, pin):
+        for bus in self.buses:
+            if pin in (bus['sda'], bus['scl']):
+                if pin == bus['scl']:
+                    for chip in bus['chips']:
+                        if chip.stretch > 0 and pin not in self.low:
+                            chip.stretch -= 1
+                    self._update()
+                return self._level(bus, pin)
+        return 1
+
+
+@pytest.fixture
+def wires():
+    return FakeWireGPIO()
+
+
+def wire_pi(gpio):
+    return RaspberryPi(gpio_loader=lambda: gpio, reserved=reserved_for_tests())
+
+
+def reserved_for_tests():
+    return {2: "I2C (SDA)", 3: "I2C (SCL)", 5: "the start button"}
+
+
+def test_software_bus_writes_and_reads_registers(wires):
+    chip = FakeChip(0x48)
+    wires.add_bus(23, 24, [chip])
+    device = wire_pi(wires).i2c_bus(23, 24).device(0x48)
+    device.write(0x10, [0xA5, 0x3C])
+    assert chip.registers == {0x10: 0xA5, 0x11: 0x3C}
+    assert device.read(0x10, 2) == b"\xa5\x3c"
+    assert device.read(0x11)[0] == 0x3C
+
+
+def test_software_bus_never_drives_a_line_high(wires):
+    chip = FakeChip(0x48)
+    wires.add_bus(23, 24, [chip])
+    device = wire_pi(wires).i2c_bus(23, 24).device(0x48)
+    device.write(0x00, [0xFF, 0x00])
+    device.read(0x00, 2)
+    assert not wires.drove_high
+
+
+def test_software_bus_scan(wires):
+    wires.add_bus(23, 24, [FakeChip(0x40), FakeChip(0x68)])
+    assert wire_pi(wires).i2c_bus(23, 24).scan() == [0x40, 0x68]
+
+
+def test_software_bus_names_its_own_pins_in_errors(wires):
+    wires.add_bus(23, 24, [])
+    with pytest.raises(I2CError, match="none were found.*GPIO 23.*SCL is on GPIO 24"):
+        wire_pi(wires).i2c_bus(23, 24).device(0x40).read(0)
+
+
+def test_software_bus_wrong_address_names_devices_found(wires):
+    wires.add_bus(23, 24, [FakeChip(0x40)])
+    with pytest.raises(I2CError, match="0x41, but these did: 0x40"):
+        wire_pi(wires).i2c_bus(23, 24).device(0x41).write(0, 0)
+
+
+def test_software_bus_waits_for_clock_stretching(wires):
+    chip = FakeChip(0x48, stretch=5)
+    wires.add_bus(23, 24, [chip])
+    device = wire_pi(wires).i2c_bus(23, 24).device(0x48)
+    device.write(0x01, 0x42)
+    assert chip.registers == {0x01: 0x42}
+
+
+def test_software_bus_clock_held_low_is_an_error(wires, monkeypatch):
+    monkeypatch.setattr('sr.robot3.i2c.CLOCK_STRETCH_TIMEOUT_NS', 1000)
+    chip = FakeChip(0x48, stretch=10 ** 9)
+    wires.add_bus(23, 24, [chip])
+    with pytest.raises(I2CError, match="bus failed.*GPIO 23"):
+        wire_pi(wires).i2c_bus(23, 24).device(0x48).read(0)
+
+
+def test_software_bus_frees_a_chip_left_mid_byte(wires):
+    """Code killed during a read leaves the chip holding SDA low."""
+    chip = FakeChip(0x48)
+    chip.registers[0] = 0x00
+    wires.add_bus(23, 24, [chip])
+    device = wire_pi(wires).i2c_bus(23, 24).device(0x48)
+    chip.state, chip.byte, chip.bits, chip.holding_sda = 'send', 0x00, 1, True
+    wires.buses[0]['levels'] = (0, 1)  # It took SDA while SCL was low, so it isn't a start.
+    assert wires.input(23) == 0
+    device.write(0x01, 0x42)
+    assert chip.registers[0x01] == 0x42
+    assert not chip.holding_sda
+
+
+def test_software_bus_sda_stuck_low_is_an_error(wires):
+    chip = FakeChip(0x48)
+    wires.add_bus(23, 24, [chip])
+    device = wire_pi(wires).i2c_bus(23, 24).device(0x48)
+    chip.clock_falling = lambda: None
+    chip.stop = lambda: None
+    chip.holding_sda = True
+    wires.buses[0]['levels'] = (0, 1)
+    with pytest.raises(I2CError, match="SDA is being held low"):
+        device.read(0)
+
+
+def test_servo_driver_with_pins_makes_its_own_bus(wires, monkeypatch):
+    monkeypatch.setattr(atexit, 'register', lambda fn: None)
+    chip = FakeChip(0x40)
+    wires.add_bus(23, 24, [chip])
+    driver = wire_pi(wires).servo_driver(sda=23, scl=24)
+    driver.servos[3].position = 1
+    assert chip.registers[0xFE] == 121
+    assert chip.registers[0x00] == 0x20
+    off = chip.registers[0x06 + 12 + 2] | chip.registers[0x06 + 12 + 3] << 8
+    assert 405 <= off <= 415  # 2000us
+
+
+def test_same_address_on_two_buses_stays_separate(wires, monkeypatch):
+    monkeypatch.setattr(atexit, 'register', lambda fn: None)
+    first, second = FakeChip(0x40), FakeChip(0x40)
+    wires.add_bus(23, 24, [first])
+    wires.add_bus(17, 27, [second])
+    pi = wire_pi(wires)
+    pi.servo_driver(sda=23, scl=24).servos[0].position = 1
+    pi.servo_driver(sda=17, scl=27).servos[0].position = -1
+    assert first.registers[0x08] != second.registers[0x08]
+    assert pi.servo_driver(sda=23, scl=24) is pi.servo_driver(sda=23, scl=24)
+    assert pi.servo_driver(sda=23, scl=24) is not pi.servo_driver(sda=17, scl=27)
+
+
+def test_same_pins_give_the_same_bus(wires):
+    wires.add_bus(23, 24, [])
+    pi = wire_pi(wires)
+    assert pi.i2c_bus(23, 24) is pi.i2c_bus(23, 24)
+
+
+def test_gpio_2_and_3_are_the_main_bus(wires):
+    pi = wire_pi(wires)
+    assert pi.i2c_bus(2, 3) is pi.i2c
+
+
+@pytest.mark.parametrize("sda, scl", [(23, 25), (25, 24), (24, 23)])
+def test_buses_sharing_a_pin_collide(wires, sda, scl):
+    pi = wire_pi(wires)
+    pi.i2c_bus(23, 24)
+    expected = r"already used by an I2C bus \(SDA=GPIO 23, SCL=GPIO 24\)"
+    with pytest.raises(ValueError, match=expected):
+        pi.i2c_bus(sda, scl)
+
+
+def test_a_failed_bus_claims_no_pins(wires):
+    pi = wire_pi(wires)
+    pi.i2c_bus(23, 24)
+    with pytest.raises(ValueError):
+        pi.i2c_bus(25, 24)
+    pi.i2c_bus(25, 26)
+
+
+def test_bus_and_motor_collide_both_ways(wires):
+    pi = wire_pi(wires)
+    pi.i2c_bus(23, 24)
+    with pytest.raises(ValueError, match="already used by an I2C bus"):
+        pi.dc_motor(23, 25)
+    with pytest.raises(ValueError, match="already used by an I2C bus"):
+        pi.stepper_move(24, 25, 1)
+    pi.dc_motor(19, 26)
+    with pytest.raises(ValueError, match="already used by another motor"):
+        pi.i2c_bus(19, 20)
+
+
+@pytest.mark.parametrize("sda, scl", [(2, 24), (24, 3), (5, 24), (3, 2)])
+def test_bus_on_reserved_pins_is_refused(wires, sda, scl):
+    with pytest.raises(ValueError, match="is used by"):
+        wire_pi(wires).i2c_bus(sda, scl)
+
+
+@pytest.mark.parametrize("sda, scl", [(23, 23), (99, 24), ("a", 24), ([1], 24), (True, 24)])
+def test_bad_bus_pins_are_refused(wires, sda, scl):
+    with pytest.raises(ValueError):
+        wire_pi(wires).i2c_bus(sda, scl)
+
+
+@pytest.mark.parametrize("pins", [{'sda': 23}, {'scl': 24}])
+def test_servo_driver_needs_both_pins(wires, pins):
+    with pytest.raises(ValueError, match="both sda and scl"):
+        wire_pi(wires).servo_driver(**pins)
+
+
+def test_bus_pins_are_released_when_code_ends(wires, monkeypatch):
+    registered = []
+    monkeypatch.setattr(atexit, 'register', registered.append)
+    chip = FakeChip(0x40)
+    wires.add_bus(23, 24, [chip])
+    pi = wire_pi(wires)
+    pi.servo_driver(sda=23, scl=24).servos[0].position = 1
+    assert len(registered) == 2
+    # atexit runs the last one first: the servos stop while the pins still work.
+    for function in reversed(registered):
+        function()
+    assert chip.registers[0xFD] == 0x10
+    assert sorted(wires.cleaned) == [23, 24]
