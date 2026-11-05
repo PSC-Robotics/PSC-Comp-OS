@@ -126,7 +126,6 @@ class Robot(metaclass=FinalMeta):
         power_boards = PowerBoard._get_supported_boards(manual_boards, sleep_fn=self.sleep)
         if not power_boards:
             self._no_powerboard = True
-            logger.info("No power board found; continuing without one.")
             return
 
         self._power_board = singular(power_boards)
@@ -345,7 +344,11 @@ class Robot(metaclass=FinalMeta):
         :return: The power board object
         """
         if self._no_powerboard:
-            raise RuntimeError("No power board was initialized")
+            raise RuntimeError(
+                "No power board is connected, so robot.power_board can't be used. The "
+                "Brain Board doesn't need one: use robot.buzzer, and the start button "
+                "on the HAT."
+            )
 
         return self._power_board
 

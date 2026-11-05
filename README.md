@@ -122,7 +122,7 @@ usually works; if colours flicker, add a level shifter on DIN.
 
 `sr.robot3` reads `/etc/psc-status.toml` to decide which pins robot code can't
 use: the start button, the buzzer and the LED chain's pins, plus 14/15 (serial,
-for bus servos) and 0/1 (HAT EEPROM). Wire the start button between GPIO 5 and
+for bus servos), 2/3 (I2C) and 0/1 (HAT EEPROM). Wire the start button between GPIO 5 and
 GND; the internal pull-up is enabled. Never connect a GPIO pin to 5V. A press
 sends the same start event as the web UI's Start button.
 
@@ -134,6 +134,22 @@ API's `robot.kch` LEDs use the WS2812 chain instead of those pins.
 systemctl status psc-statusd
 journalctl -u psc-statusd
 ```
+
+## I2C And Servo Drivers
+
+I2C is on by default (`dtparam=i2c_arm=on`, the `i2c-dev` module and the `robot`
+user in the `i2c` group), on GPIO 2 (SDA, header pin 3) and GPIO 3 (SCL, pin 5).
+Robot code uses `robot.raspberry_pi.i2c`: `scan()` lists devices, and
+`device(address)` gives `read`, `write`, `send` and `receive`.
+
+`robot.raspberry_pi.servos[0].position = 0.5` moves a servo on a PCA9685 driver at
+address 0x40, with positions from -1 to 1 as on Student Robotics' servo board. Use
+`robot.raspberry_pi.servo_driver(0x41)` for another address. Problems raise
+`I2CError`, with a message saying what to check. See `examples/pca9685` and
+`examples/i2c`.
+
+A power board is optional. `robot.power_board` raises an error if there isn't one,
+and nothing is logged otherwise.
 
 ## Networking And USB
 

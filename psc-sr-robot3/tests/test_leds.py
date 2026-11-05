@@ -95,18 +95,18 @@ def test_reserved_pins_follow_the_status_config(tmp_path) -> None:
     path = tmp_path / "psc-status.toml"
 
     # Defaults (the Brain Board HAT): the LED chain on GPIO 18 only.
-    assert sorted(reserved_pins(path)) == [0, 1, 5, 13, 14, 15, 18]
+    assert sorted(reserved_pins(path)) == [0, 1, 2, 3, 5, 13, 14, 15, 18]
 
     path.write_text(
         "[led_strip]\npins = [18, 10]\n[start_button]\npin = 6\n[buzzer]\npin = 12\n")
     pins = reserved_pins(path)
-    assert sorted(pins) == [0, 1, 6, 7, 8, 9, 10, 11, 12, 14, 15, 18]
+    assert sorted(pins) == [0, 1, 2, 3, 6, 7, 8, 9, 10, 11, 12, 14, 15, 18]
     assert pins[8] == "the LED strip's SPI port"
 
     path.write_text("[led_strip]\nenabled = false\n")
-    assert sorted(reserved_pins(path)) == [0, 1, 5, 13, 14, 15]
+    assert sorted(reserved_pins(path)) == [0, 1, 2, 3, 5, 13, 14, 15]
     path.write_text("not toml [")
-    assert sorted(reserved_pins(path)) == [0, 1, 5, 13, 14, 15, 18]
+    assert sorted(reserved_pins(path)) == [0, 1, 2, 3, 5, 13, 14, 15, 18]
 
 
 @pytest.mark.parametrize("pin", [7, 8, 9, 10, 11, 18])

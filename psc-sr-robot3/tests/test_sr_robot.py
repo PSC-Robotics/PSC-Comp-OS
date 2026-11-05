@@ -148,7 +148,7 @@ def test_robot_without_sr_boards(monkeypatch) -> None:
         assert robot.motor_boards == {}
         assert robot.servo_boards == {}
         assert robot.arduinos == {}
-        with pytest.raises(RuntimeError, match="No power board was initialized"):
+        with pytest.raises(RuntimeError, match="No power board is connected"):
             _ = robot.power_board
     finally:
         robot._lock.close()

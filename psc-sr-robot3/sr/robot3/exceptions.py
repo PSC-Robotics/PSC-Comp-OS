@@ -29,6 +29,11 @@ class BoardDisconnectionError(IOError):
     pass
 
 
+class I2CError(IOError):
+    """Raised when an I2C device can't be reached. The message says how to fix it."""
+    pass
+
+
 class IncorrectBoardError(IOError):
     """
     Raised when a board returns the wrong board type in response to *IDN?.

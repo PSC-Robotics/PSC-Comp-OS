@@ -19,7 +19,12 @@ gpio=5=ip,pu
 
 # SPI for the WS2812 LED chain on GPIO 10 (header pin 19)
 dtparam=spi=on
+
+# I2C for robot code on GPIO 2 and 3 (header pins 3 and 5)
+dtparam=i2c_arm=on
 CONFIG
+# The driver that creates /dev/i2c-1, which robot code opens as the i2c group.
+echo i2c-dev > /etc/modules-load.d/psc-i2c.conf
 
 # The WS2812 LED chain on GPIO 18 (header pin 12) uses the PWM hardware, which the
 # analogue audio output also uses, so turn the audio off.

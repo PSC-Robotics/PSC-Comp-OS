@@ -9,6 +9,7 @@ from pathlib import Path
 from types import ModuleType
 from typing import Callable, Optional
 
+from .i2c import DEFAULT_SERVO_DRIVER_ADDRESS, I2CBus, ServoDriver, ServoPorts
 from .leds import STATUS_CONFIG
 from .logging import log_to_debug
 from .pin_motors import DCMotor, Stepper, register_driven_pins
@@ -20,9 +21,10 @@ else:
 
 LOGGER = logging.getLogger(__name__)
 
-# Pins the robot always uses: the HAT EEPROM (0, 1) and the serial port for bus
-# servos (14, 15). The rest come from the status service's config: see reserved_pins.
+# Pins the robot always uses: the HAT EEPROM (0, 1), I2C (2, 3) and the serial port for
+# bus servos (14, 15). The rest come from the status service's config: see reserved_pins.
 FIXED_RESERVED_PINS = {0: "HAT EEPROM", 1: "HAT EEPROM",
+                       2: "I2C (SDA)", 3: "I2C (SCL)",
                        14: "the serial port (bus servos)", 15: "the serial port (bus servos)"}
 # Besides MOSI (GPIO 10), the SPI port also takes these pins.
 SPI_PINS = (7, 8, 9, 11)
@@ -85,7 +87,8 @@ class RaspberryPi:
     """
     Devices wired directly to the brain board's Raspberry Pi GPIO header.
 
-    Supports DC motor drivers (such as the DRV8871) and stepper motor drivers.
+    Supports DC motor drivers (such as the DRV8871), stepper motor drivers, I2C
+    devices and PCA9685 servo drivers.
     Pins are given as BCM GPIO numbers (e.g. 23 for GPIO 23, header pin 16),
     not header pin numbers.
 
@@ -94,10 +97,11 @@ class RaspberryPi:
     :param leds: The user LEDs (LED_A to LED_C).
     :param reserved: Pins robot code can't use, and what uses each; read from the
         status service's config if not given.
+    :param i2c: The I2C bus; replaced in tests.
     """
     __slots__ = (
         '_gpio', '_gpio_loader', '_clock_ns', '_pin_modes', '_pwms', '_motors', '_claims',
-        '_leds', '_reserved',
+        '_leds', '_reserved', '_i2c', '_servo_drivers',
     )
 
     def __init__(
@@ -106,8 +110,11 @@ class RaspberryPi:
         clock_ns: Callable[[], int] = time.perf_counter_ns,
         leds: tuple = (),
         reserved: Optional[dict[int, str]] = None,
+        i2c: Optional[I2CBus] = None,
     ) -> None:
         self._leds = leds
+        self._i2c = I2CBus() if i2c is None else i2c
+        self._servo_drivers: dict[int, ServoDriver] = {}
         self._reserved = reserved_pins() if reserved is None else reserved
         self._gpio: Optional[ModuleType] = None
         self._gpio_loader = gpio_loader
@@ -126,6 +133,36 @@ class RaspberryPi:
         Robotics' KCH board.
         """
         return self._leds
+
+    @property
+    def i2c(self) -> I2CBus:
+        """
+        The I2C bus, on GPIO 2 (SDA, header pin 3) and GPIO 3 (SCL, pin 5). Use
+        ``i2c.scan()`` to list devices and ``i2c.device(address)`` to talk to one.
+        """
+        return self._i2c
+
+    @property
+    def servos(self) -> ServoPorts:
+        """
+        The servos on a PCA9685 servo driver at I2C address 0x40, by port from 0 to 15.
+        Move one with ``robot.raspberry_pi.servos[0].position = 0.5``, as on Student
+        Robotics' servo board: positions go from -1 to 1.
+        """
+        return self.servo_driver().servos
+
+    @log_to_debug
+    def servo_driver(self, address: int = DEFAULT_SERVO_DRIVER_ADDRESS) -> ServoDriver:
+        """
+        Get a PCA9685 servo driver, for when it isn't at the usual address of 0x40.
+
+        :param address: The driver's I2C address.
+        :raises ValueError: If the address is invalid.
+        """
+        device = self._i2c.device(address)
+        if address not in self._servo_drivers:
+            self._servo_drivers[address] = ServoDriver(device)
+        return self._servo_drivers[address]
 
     def _load(self) -> ModuleType:
         if self._gpio is None:
@@ -155,7 +192,7 @@ class RaspberryPi:
 
     def _check_pin(self, pin: int, name: str) -> int:
         if not isinstance(pin, int) or isinstance(pin, bool) or not 0 <= pin <= 27:
-            raise ValueError(f"{name} must be a BCM GPIO number from 2 to 27")
+            raise ValueError(f"{name} must be a BCM GPIO number from 4 to 27")
         if pin in self._reserved:
             raise ValueError(f"GPIO {pin} is used by {self._reserved[pin]}")
         return pin

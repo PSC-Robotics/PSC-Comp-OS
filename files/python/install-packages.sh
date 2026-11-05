@@ -18,7 +18,7 @@ pip install -r /tmp/packer/python/requirements.txt
 PSC_SR_SRC=/tmp/psc-sr-robot3
 PSC_SR_CLEAN=/tmp/psc-sr-robot3-clean
 PSC_SR_WHEELS=/tmp/psc-sr-robot3-wheel
-PSC_SR_VERSION=2026.0.3+psc.13
+PSC_SR_VERSION=2026.0.3+psc.14
 rm -rf "$PSC_SR_CLEAN" "$PSC_SR_WHEELS"
 mkdir -p "$PSC_SR_CLEAN"
 tar -C "$PSC_SR_SRC" \
