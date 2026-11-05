@@ -6,7 +6,7 @@ import pytest
 
 from sr.robot3 import Note
 from sr.robot3.buzzer import BUZZER_TOPIC, Buzzer
-from sr.robot3.raspberry_pi import RaspberryPi, reserved_pins
+from sr.robot3.brain import Brain, reserved_pins
 
 # The pins the robot uses with the status service's default settings.
 DEFAULT_RESERVED = reserved_pins(Path('/nonexistent/psc-status.toml'))
@@ -99,12 +99,12 @@ class FakeClock:
 def make_pi():
     clock = FakeClock()
     gpio = FakeGPIO(clock)
-    pi = RaspberryPi(gpio_loader=lambda: gpio, clock_ns=clock, reserved=DEFAULT_RESERVED)
+    pi = Brain(gpio_loader=lambda: gpio, clock_ns=clock, reserved=DEFAULT_RESERVED)
     return pi, gpio
 
 
 def test_stepper_pulses_step_pin_with_direction_and_spacing(monkeypatch) -> None:
-    monkeypatch.setattr("sr.robot3.raspberry_pi.time.sleep", lambda secs: None)
+    monkeypatch.setattr("sr.robot3.brain.time.sleep", lambda secs: None)
     pi, gpio = make_pi()
 
     pi.stepper_move(23, 24, 3, direction=False, step_delay_us=500)
@@ -145,4 +145,4 @@ def test_stepper_off_the_robot_explains_why() -> None:
         raise RuntimeError("Raspberry Pi GPIO is only available when running on the robot")
 
     with pytest.raises(RuntimeError, match="only available"):
-        RaspberryPi(gpio_loader=no_gpio).stepper_move(23, 24, 1)
+        Brain(gpio_loader=no_gpio).stepper_move(23, 24, 1)

@@ -70,14 +70,14 @@ A new tone replaces the one playing. Tones are played by the robot's status
 service, which also beeps when code is waiting for the start button, when start
 is pressed, and with fast short beeps when code crashes.
 
-### Steppers on the Raspberry Pi GPIO
+### Steppers on the brain board's GPIO pins
 
-`robot.raspberry_pi.stepper_move(step_pin, direction_pin, steps)` drives a
+`robot.brain.stepper_move(step_pin, direction_pin, steps)` drives a
 step/direction stepper driver wired to the Pi's GPIO header, using BCM GPIO
 numbers. It takes the same arguments as `arduino.stepper_move`, but has no
 350 ms limit: `steps` can be up to 1000000 and `step_delay_us` from 50 to
 1000000. Timing is done in software, so step timing can vary slightly. GPIO 5,
-13, 17, 22 and 27 are used by the robot and can't be used.
+13 and 18 are used by the robot and can't be used.
 
 ### Multiple cameras
 

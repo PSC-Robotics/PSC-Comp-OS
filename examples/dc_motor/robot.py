@@ -1,5 +1,5 @@
 """
-DC motor test for a DRV8871 motor driver wired to the Raspberry Pi.
+DC motor test for a DRV8871 motor driver wired to the brain board.
 
 Wiring (BCM GPIO numbers, header pin in brackets):
     Driver IN1  -> GPIO 20 (pin 38)
@@ -8,14 +8,14 @@ Wiring (BCM GPIO numbers, header pin in brackets):
     Driver VM / GND power terminals -> motor supply (6.5V to 45V, e.g. 12V)
     Driver OUT1 / OUT2 -> the motor's two wires
 
-Needs PSC Robotics OS 2026.0.15 or later. Copy this file to the root of the
+Copy this file to the root of the
 USB stick as robot.py, plug it into the robot, then press the start button.
 """
 from sr.robot3 import BRAKE, COAST, Robot
 
 robot = Robot()  # waits here until the start button is pressed
 
-motor = robot.raspberry_pi.dc_motor(20, 21)  # IN1, IN2
+motor = robot.brain.dc_motor(20, 21)  # IN1, IN2
 
 print("Speeding up forwards")
 for step in range(1, 11):

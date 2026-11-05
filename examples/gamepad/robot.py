@@ -1,10 +1,10 @@
 """
 Drive the robot with a gamepad (Bluetooth or USB).
 
-Needs PSC Robotics OS 2026.0.16 or later. Pair a Bluetooth controller from the
+Pair a Bluetooth controller from the
 Gamepads button in the web interface, or plug one in with a USB cable.
 
-Wiring: two DRV8871 DC motor drivers on the Raspberry Pi (BCM GPIO numbers)
+Wiring: two DRV8871 DC motor drivers on the brain board (BCM GPIO numbers)
     Left motor:  IN1 -> GPIO 20 (pin 38), IN2 -> GPIO 21 (pin 40)
     Right motor: IN1 -> GPIO 19 (pin 35), IN2 -> GPIO 26 (pin 37)
 
@@ -21,8 +21,8 @@ carries on when the controller reconnects.
 from sr.robot3 import BRAKE, Robot
 
 robot = Robot()
-left_motor = robot.raspberry_pi.dc_motor(20, 21)
-right_motor = robot.raspberry_pi.dc_motor(19, 26)
+left_motor = robot.brain.dc_motor(20, 21)
+right_motor = robot.brain.dc_motor(19, 26)
 
 robot.wait_for_gamepad()  # Waits here until a controller connects
 gamepad = robot.gamepad

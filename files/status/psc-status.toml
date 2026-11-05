@@ -8,16 +8,16 @@
 # Wire the first LED's DIN to GPIO 18 (header pin 12, as on the Brain Board HAT)
 # or GPIO 10 (header pin 19), VDD to 5V and GND to GND; chain each LED's DOUT to
 # the next one's DIN. The first LED shows the robot's status;
-# robot code sets the others with robot.leds.
-# Restart psc-statusd after editing (robot code reads count when it starts).
+# robot code sets the second with robot.brain.led.
+# Restart psc-statusd after editing.
 [led_strip]
 enabled = true
 count = 2                # LEDs in the chain, including the status LED (up to 320)
 pins = [18]              # 18 by PWM (the HAT); add 10 to also send it by SPI,
                          # which also takes GPIO 7, 8, 9 and 11 from robot code
-status_led = true        # false: robot code controls every LED, including the first
+status_led = true        # false: robot code controls the first LED
 status_brightness = 0.2  # 0 to 1; the status LED at full brightness is dazzling
-brightness = 1.0         # 0 to 1, scales the colours robot code sets
+brightness = 1.0         # 0 to 1, scales the colour robot code sets
 
 [start_button]
 pin = 5      # header pin 29; wire the button between this pin and GND

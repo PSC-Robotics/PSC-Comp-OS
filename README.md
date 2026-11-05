@@ -89,6 +89,8 @@ chain, plays sounds on a buzzer and handles a physical start button. The pins
 | Booting | Blue, pulsing |
 | No code USB plugged in | Pink, flashing |
 | Waiting for the start button | Green, pulsing slowly (dim) |
+| Waiting for the start button in competition mode | Yellow, pulsing slowly (dim) |
+| Competition USB just plugged in, or plugged in with no code USB | Yellow, flashing rapidly |
 | Robot code running | Green |
 | Robot code finished or stopped | White (dim) |
 | Robot code crashed | Red, flashing |
@@ -109,26 +111,27 @@ The buzzer is silenced whenever robot code is not running, so a tone left
 playing stops when the code finishes, crashes or is killed.
 
 Wire the first LED's DIN to GPIO 18 (as on the Brain Board HAT), VDD to 5V and
-GND to GND, and each LED's DOUT to the next one's DIN. Robot code sets the LEDs
-after the status LED with `robot.raspberry_pi.leds[LED_A].colour = Colour.RED`
-(as on Student Robotics' KCH board) or `robot.leds[0] = (255, 0, 0)`, over MQTT
-(`psc/leds`), and they turn off when the code stops. GPIO 18 is driven through
-the PWM hardware (`rpi_ws281x`; the analogue audio output is turned off, as it
-also uses the PWM hardware). Add 10 to `pins` under `[led_strip]` to also send
-the data on GPIO 10 through the SPI port (`dtparam=spi=on`); that also takes GPIO
-7, 8, 9 and 11. Set the number of LEDs with `count` (default 2). The chain lights
-once `psc-statusd` starts, 10 to 20 seconds after power-on. The Pi's 3.3V data
-usually works; if colours flicker, add a level shifter on DIN.
+GND to GND, and its DOUT to the second LED's DIN. Robot code sets the second LED
+with `robot.brain.led.colour = Colour.RED`, or `(255, 80, 0)` for any colour, over
+MQTT (`psc/leds`), and it turns off when the code stops. GPIO 18 is driven through
+the PWM hardware (`rpi_ws281x`; the analogue audio output is turned off, as it also
+uses the PWM hardware). The LEDs light once `psc-statusd` starts, 10 to 20 seconds
+after power-on.
+
+`psc-statusd` follows Astoria's `astoria/astmetad` topic for competition mode, and
+`astoria/astdiskd` for competition USBs: a mounted disk with `astoria.json` and no
+`robot.py`, the same rule Astoria uses. It flashes yellow rapidly for 3 seconds when
+one is plugged in, and for as long as there's no code USB.
 
 `sr.robot3` reads `/etc/psc-status.toml` to decide which pins robot code can't
-use: the start button, the buzzer and the LED chain's pins, plus 14/15 (serial,
+use: the start button, the buzzer and the LEDs' data pin, plus 14/15 (serial,
 for bus servos), 2/3 (I2C) and 0/1 (HAT EEPROM). Wire the start button between GPIO 5 and
 GND; the internal pull-up is enabled. Never connect a GPIO pin to 5V. A press
 sends the same start event as the web UI's Start button.
 
 The Student Robotics `kchd` and `boot_40` services are not installed because
 they drive the KCH hat's pins, and robot code runs with `SR_KCH_HAT=0` so the
-API's `robot.kch` LEDs use the WS2812 chain instead of those pins.
+API leaves those pins alone.
 
 ```sh
 systemctl status psc-statusd
@@ -137,21 +140,21 @@ journalctl -u psc-statusd
 
 ## I2C And Servo Drivers
 
-I2C is on by default (`dtparam=i2c_arm=on`, the `i2c-dev` module and the `robot`
-user in the `i2c` group), on GPIO 2 (SDA, header pin 3) and GPIO 3 (SCL, pin 5).
-Robot code uses `robot.raspberry_pi.i2c`: `scan()` lists devices, and
-`device(address)` gives `read`, `write`, `send` and `receive`.
+`robot.brain.servo_driver(sda=17, scl=27)` gives a PCA9685 driver on any two free
+GPIO pins, with positions from -1 to 1 as on Student Robotics' servo board.
+`robot.brain.i2c_bus(sda=17, scl=27)` gives the bus on those pins, which is the same
+bus if a servo driver is already on them: `scan()` lists devices, and
+`device(address)` gives `read`, `write`, `send` and `receive`. These buses are driven
+in software through RPi.GPIO (`SoftwareI2CBus`), so they need no boot config.
 
-`robot.raspberry_pi.servos[0].position = 0.5` moves a servo on a PCA9685 driver at
-address 0x40, with positions from -1 to 1 as on Student Robotics' servo board. Use
-`robot.raspberry_pi.servo_driver(0x41)` for another address. Problems raise
-`I2CError`, with a message saying what to check. See `examples/pca9685` and
-`examples/i2c`.
+A pin can only belong to one bus or motor. Addresses only have to differ within one
+bus, and giving a device a servo driver's address on the same bus raises a
+`ValueError`. Problems on the bus raise `I2CError`, with a message saying what to
+check. See `examples/servo_driver` and `examples/i2c`.
 
-`robot.raspberry_pi.i2c_bus(sda=23, scl=24)` makes another bus on any two free pins,
-and `servo_driver(sda=23, scl=24)` makes one for a driver. These buses are driven in
-software through RPi.GPIO (`SoftwareI2CBus`), so they need no boot config, and
-addresses only have to differ within one bus. A pin can only belong to one bus or motor.
+Hardware I2C is also on (`dtparam=i2c_arm=on`, the `i2c-dev` module and the `robot`
+user in the `i2c` group), on GPIO 2 and 3, for devices on the HAT itself. Those pins
+have no screw terminals. `robot.brain.i2c_bus(sda=2, scl=3)` gets that bus.
 
 A power board is optional. `robot.power_board` raises an error if there isn't one,
 and nothing is logged otherwise.

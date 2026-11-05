@@ -87,13 +87,10 @@ class KCH:
     """KCH Board."""
     __slots__ = ('_leds', '_pwm')
 
-    def __init__(self, chain_leds: Optional[tuple['LED', ...]] = None) -> None:
+    def __init__(self) -> None:
         self._leds: tuple[LED, ...]
 
-        if chain_leds is not None and not HAS_HAT and not IN_SIMULATOR:
-            # PSC robots: the user LEDs are WS2812s chained after the status LED.
-            self._leds = chain_leds
-        elif HAS_HAT:
+        if HAS_HAT:
             GPIO.setmode(GPIO.BCM)
             with warnings.catch_warnings():
                 warnings.simplefilter("ignore")

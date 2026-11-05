@@ -11,7 +11,7 @@ from sr.robot3 import I2CError
 from sr.robot3.i2c import (
     EREMOTEIO, I2C_M_RD, I2C_RDWR, I2CBus, ServoDriver, _Message, _Transfer,
 )
-from sr.robot3.raspberry_pi import RaspberryPi
+from sr.robot3.brain import Brain
 
 FD = 7
 
@@ -332,37 +332,38 @@ def test_stopping_ignores_a_lost_driver(kernel, servo_driver):
 
 
 def make_pi(kernel):
-    return RaspberryPi(
+    return Brain(
         gpio_loader=lambda: None, reserved={},
         i2c=I2CBus(opener=kernel.open, ioctl=kernel.ioctl),
     )
 
 
-def test_raspberry_pi_servos(kernel, monkeypatch):
+def test_brain_servo_driver_on_the_hardware_pins(kernel, monkeypatch):
     monkeypatch.setattr(atexit, 'register', lambda fn: None)
     pi = make_pi(kernel)
-    assert len(pi.servos) == 16
-    assert pi.servos is pi.servo_driver().servos
-    pi.servos[0].position = 0
+    driver = pi.servo_driver(sda=2, scl=3)
+    assert len(driver.servos) == 16
+    driver.servos[0].position = 0
     assert channel_off(kernel, 0) > 0
 
 
-def test_raspberry_pi_second_driver():
+def test_brain_second_driver():
     kernel = FakeKernel((0x40, 0x41))
     pi = make_pi(kernel)
-    assert pi.servo_driver(0x41) is pi.servo_driver(0x41)
-    assert pi.servo_driver(0x41) is not pi.servo_driver()
+    second = pi.servo_driver(sda=2, scl=3, address=0x41)
+    assert second is pi.servo_driver(sda=2, scl=3, address=0x41)
+    assert second is not pi.servo_driver(sda=2, scl=3)
     with pytest.raises(ValueError, match="I2C address"):
-        pi.servo_driver(0x99)
+        pi.servo_driver(sda=2, scl=3, address=0x99)
 
 
-def test_raspberry_pi_i2c(kernel):
-    pi = make_pi(kernel)
-    assert pi.i2c.scan() == [0x40]
+def test_servo_driver_needs_its_pins(kernel):
+    with pytest.raises(TypeError, match="sda"):
+        make_pi(kernel).servo_driver()
 
 
 def test_i2c_pins_are_reserved():
-    pi = RaspberryPi(gpio_loader=lambda: None)
+    pi = Brain(gpio_loader=lambda: None)
     with pytest.raises(ValueError, match="GPIO 2 is used by I2C"):
         pi.dc_motor(2, 4)
     with pytest.raises(ValueError, match="GPIO 3 is used by I2C"):
@@ -527,7 +528,7 @@ def wires():
 
 
 def wire_pi(gpio):
-    return RaspberryPi(gpio_loader=lambda: gpio, reserved=reserved_for_tests())
+    return Brain(gpio_loader=lambda: gpio, reserved=reserved_for_tests())
 
 
 def reserved_for_tests():
@@ -643,9 +644,60 @@ def test_same_pins_give_the_same_bus(wires):
     assert pi.i2c_bus(23, 24) is pi.i2c_bus(23, 24)
 
 
-def test_gpio_2_and_3_are_the_main_bus(wires):
+def test_gpio_2_and_3_are_the_hardware_bus(wires):
     pi = wire_pi(wires)
-    assert pi.i2c_bus(2, 3) is pi.i2c
+    assert type(pi.i2c_bus(2, 3)) is I2CBus
+
+
+def test_device_shares_the_bus_of_a_servo_driver_on_its_pins(wires, monkeypatch):
+    monkeypatch.setattr(atexit, 'register', lambda fn: None)
+    driver_chip, sensor = FakeChip(0x40), FakeChip(0x48)
+    wires.add_bus(23, 24, [driver_chip, sensor])
+    pi = wire_pi(wires)
+    pi.servo_driver(sda=23, scl=24).servos[0].position = 1
+    bus = pi.i2c_bus(sda=23, scl=24)
+    assert sorted(bus.scan()) == [0x40, 0x48]
+    bus.device(0x48).write(0x01, [0x10])
+    assert sensor.registers[0x01] == 0x10
+
+
+def test_device_cant_use_a_servo_drivers_address(wires):
+    wires.add_bus(23, 24, [])
+    pi = wire_pi(wires)
+    pi.servo_driver(sda=23, scl=24)
+    with pytest.raises(ValueError, match=(
+            "0x40 on the bus on GPIO 23 and 24 is already used by a servo driver")):
+        pi.i2c_bus(sda=23, scl=24).device(0x40)
+
+
+def test_servo_driver_cant_use_a_devices_address(wires):
+    wires.add_bus(23, 24, [])
+    pi = wire_pi(wires)
+    pi.i2c_bus(sda=23, scl=24).device(0x40)
+    with pytest.raises(ValueError, match="is already used by an I2C device"):
+        pi.servo_driver(sda=23, scl=24)
+
+
+def test_same_address_is_fine_on_other_pins(wires):
+    wires.add_bus(23, 24, [])
+    wires.add_bus(17, 27, [])
+    pi = wire_pi(wires)
+    pi.servo_driver(sda=23, scl=24)
+    assert pi.i2c_bus(sda=17, scl=27).device(0x40).address == 0x40
+
+
+def test_asking_for_the_same_device_again_is_fine(wires):
+    wires.add_bus(23, 24, [])
+    bus = wire_pi(wires).i2c_bus(sda=23, scl=24)
+    assert bus.device(0x48) is bus.device(0x48)
+
+
+def test_swapped_pins_say_which_bus_uses_them(wires):
+    wires.add_bus(23, 24, [])
+    pi = wire_pi(wires)
+    pi.servo_driver(sda=23, scl=24)
+    with pytest.raises(ValueError, match="GPIO 24 is already used by an I2C bus"):
+        pi.i2c_bus(sda=24, scl=23)
 
 
 @pytest.mark.parametrize("sda, scl", [(23, 25), (25, 24), (24, 23)])
@@ -691,7 +743,7 @@ def test_bad_bus_pins_are_refused(wires, sda, scl):
 
 @pytest.mark.parametrize("pins", [{'sda': 23}, {'scl': 24}])
 def test_servo_driver_needs_both_pins(wires, pins):
-    with pytest.raises(ValueError, match="both sda and scl"):
+    with pytest.raises(TypeError, match="sda|scl"):
         wire_pi(wires).servo_driver(**pins)
 
 

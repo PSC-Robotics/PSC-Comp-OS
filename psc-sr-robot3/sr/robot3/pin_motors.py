@@ -3,7 +3,7 @@ DC motors and stepper motors driven directly from the Raspberry Pi's or an Ardui
 
 A DC motor uses a driver with two inputs, such as a DRV8871 (IN1 and IN2).
 A stepper motor uses a driver with step and direction inputs, such as an A4988.
-The boards create these objects: see ``RaspberryPi.dc_motor`` and ``Arduino.dc_motor``.
+The boards create these objects: see ``Brain.dc_motor`` and ``Arduino.dc_motor``.
 """
 from __future__ import annotations
 

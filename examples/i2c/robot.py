@@ -1,18 +1,18 @@
 """
-List the devices on the I2C bus, then read a register from the first one.
+List the devices on an I2C bus, then read a register from the first one.
 
-Connect SDA to GPIO 2 (header pin 3), SCL to GPIO 3 (pin 5), and give the device
-power and a shared ground with the Pi. Check its datasheet for its voltage: the
-Pi's I2C pins are 3.3V only.
+Connect the device's SDA to GPIO 17 and SCL to GPIO 27, or any two free GPIO pins
+(change them below), and give it power and a shared ground with the brain board.
+The GPIO pins are 3.3V only, so check the device doesn't pull SDA or SCL up to 5V.
 
-Needs PSC Robotics OS 2026.0.20 or later. Copy this file to the top of your USB
-stick, named robot.py, and press the start button.
+Copy this file to the top of your USB stick, named robot.py, and press the start
+button.
 """
 from sr.robot3 import Robot
 
 robot = Robot()  # Waits here until the start button is pressed
 
-i2c = robot.raspberry_pi.i2c
+i2c = robot.brain.i2c_bus(sda=17, scl=27)
 
 addresses = i2c.scan()
 print("Devices found:", [hex(address) for address in addresses])

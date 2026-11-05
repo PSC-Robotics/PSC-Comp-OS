@@ -1,4 +1,4 @@
-"""Devices on the Raspberry Pi's I2C bus, including PCA9685 servo drivers."""
+"""Devices on I2C buses on the brain board's GPIO pins, including PCA9685 servo drivers."""
 from __future__ import annotations
 
 import atexit
@@ -43,6 +43,8 @@ SOFTWARE_HALF_PERIOD_NS = 5_000
 CLOCK_STRETCH_TIMEOUT_NS = 25_000_000
 
 DEFAULT_SERVO_DRIVER_ADDRESS = 0x40
+I2C_DEVICE_USER = "an I2C device"
+SERVO_DRIVER_USER = "a servo driver"
 NUM_DRIVER_SERVOS = 16
 PCA9685_MODE1 = 0x00
 PCA9685_LED0_ON_L = 0x06  # Each channel then has 4 registers: ON_L, ON_H, OFF_L and OFF_H.
@@ -108,13 +110,13 @@ def _check_length(length: object) -> int:
 
 class I2CBus:
     """
-    The Raspberry Pi's I2C bus, on GPIO 2 (SDA, header pin 3) and GPIO 3 (SCL, pin 5).
+    The Pi's hardware I2C bus, on GPIO 2 (SDA, header pin 3) and GPIO 3 (SCL, pin 5).
 
     :param path: The bus's device file.
     :param opener: Opens the device file; replaced in tests.
     :param ioctl: Sends a transfer to the device file; replaced in tests.
     """
-    __slots__ = ('_path', '_opener', '_ioctl', '_fd', '_devices')
+    __slots__ = ('_path', '_opener', '_ioctl', '_fd', '_devices', '_users')
 
     def __init__(
         self,
@@ -127,10 +129,15 @@ class I2CBus:
         self._ioctl = ioctl
         self._fd: Optional[int] = None
         self._devices: dict[int, I2CDevice] = {}
+        self._users: dict[int, str] = {}
 
     @property
     def _wiring_help(self) -> str:
         return WIRING_HELP
+
+    @property
+    def _name(self) -> str:
+        return "GPIO 2 and 3"
 
     def _open(self) -> int:
         if self._fd is not None:
@@ -146,9 +153,9 @@ class I2CBus:
             self._fd = self._opener(self._path, os.O_RDWR)
         except FileNotFoundError as error:
             raise I2CError(
-                f"I2C is turned off on this robot ({self._path} doesn't exist). Flash PSC "
-                "Robotics OS 2026.0.20 or later, or add dtparam=i2c_arm=on to "
-                "/boot/config.txt and i2c-dev to /etc/modules, then reboot."
+                f"I2C is turned off on this robot ({self._path} doesn't exist). Add "
+                "dtparam=i2c_arm=on to /boot/config.txt and i2c-dev to /etc/modules, "
+                "then reboot."
             ) from error
         except PermissionError as error:
             raise I2CError(
@@ -251,11 +258,16 @@ class I2CBus:
         Get the device at an address, found on its datasheet or with ``scan``.
 
         The bus isn't used until you read or write, so this doesn't check that the
-        device is connected.
+        device is connected. Asking for the same address again returns the same device.
 
         :param address: The device's 7-bit address, from 0x03 to 0x77.
-        :raises ValueError: If the address is invalid.
+        :raises ValueError: If the address is invalid, or a servo driver on this bus
+            is already using it.
         """
+        return self._reserve(address, I2C_DEVICE_USER)
+
+    def _reserve(self, address: int, user: str) -> I2CDevice:
+        """Get the device at an address, for one kind of user of the bus."""
         if (
             not isinstance(address, int) or isinstance(address, bool)
             or not MIN_ADDRESS <= address <= MAX_ADDRESS
@@ -263,6 +275,14 @@ class I2CBus:
             raise ValueError(
                 f"I2C address must be from {MIN_ADDRESS:#04x} to {MAX_ADDRESS:#04x}, "
                 f"got {address!r}"
+            )
+        current = self._users.setdefault(address, user)
+        if current != user:
+            raise ValueError(
+                f"I2C address {address:#04x} on {self._name} is already used by {current}. "
+                "Devices on the same pins need different addresses: change this device's "
+                "address, or connect it to two other pins and use "
+                "robot.brain.i2c_bus(sda=..., scl=...)."
             )
         if address not in self._devices:
             self._devices[address] = I2CDevice(self, address)
@@ -276,9 +296,9 @@ class SoftwareI2CBus(I2CBus):
     """
     An I2C bus on any two free GPIO pins, driven in software.
 
-    Get one with ``robot.raspberry_pi.i2c_bus(sda, scl)``. It works like the main bus,
-    but more slowly, which doesn't matter to most devices. Each device needs the same
-    wiring as on the main bus, and addresses only have to differ within one bus.
+    Get one with ``robot.brain.i2c_bus(sda, scl)``. It is slower than the Pi's hardware
+    I2C, which doesn't matter to most devices. Addresses only have to differ within one
+    bus.
 
     The lines are never driven high: a pin is released and pulled up to send a 1, which
     is how I2C lets several devices share a wire.
@@ -309,6 +329,10 @@ class SoftwareI2CBus(I2CBus):
             f"Check SDA is on GPIO {self._sda}, SCL is on GPIO {self._scl}, "
             "and the device has power and shares a ground with the Pi."
         )
+
+    @property
+    def _name(self) -> str:
+        return f"the bus on GPIO {self._sda} and {self._scl}"
 
     def _release(self, pin: int) -> None:
         self._gpio.setup(pin, self._gpio.IN, pull_up_down=self._gpio.PUD_UP)
@@ -421,7 +445,7 @@ class SoftwareI2CBus(I2CBus):
 
 class I2CDevice:
     """
-    A device on the I2C bus. Get one with ``robot.raspberry_pi.i2c.device(address)``.
+    A device on an I2C bus. Get one with ``bus.device(address)``.
 
     :param bus: The bus the device is on.
     :param address: The device's 7-bit address.
@@ -594,7 +618,7 @@ class ServoPorts(Sequence):
 
 class ServoDriver:
     """
-    A PCA9685 16-channel servo driver on the I2C bus.
+    A PCA9685 16-channel servo driver on an I2C bus.
 
     The driver is set up the first time a servo moves, so nothing happens on the bus
     until then. Every servo stops when your code ends.

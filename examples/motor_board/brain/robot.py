@@ -1,6 +1,6 @@
 """
 Drive two DC motors through two-input motor driver boards (IN1 and IN2), such as
-the DRV8871, wired to the Raspberry Pi.
+the DRV8871, wired to the brain board.
 
 Wiring (BCM GPIO numbers, header pin in brackets). Use one driver board per motor.
 
@@ -14,18 +14,18 @@ Wiring (BCM GPIO numbers, header pin in brackets). Use one driver board per moto
       GND / power - -> motor battery -
       OUT1, OUT2    -> the motor's two wires
 
-The motor battery's ground must be joined to the Raspberry Pi's ground (the GND
+The motor battery's ground must be joined to the brain board's ground (the GND
 pins above do this through the driver board). Never power the motors from the Pi.
 
-Needs PSC Robotics OS 2026.0.15 or later. Copy this file to the top of your USB
+Copy this file to the top of your USB
 stick, named robot.py, plug it into the robot and press the start button.
 """
 from sr.robot3 import BRAKE, COAST, Robot
 
 robot = Robot()  # Waits here until the start button is pressed
 
-left_motor = robot.raspberry_pi.dc_motor(20, 21)   # IN1, IN2
-right_motor = robot.raspberry_pi.dc_motor(19, 26)  # IN1, IN2
+left_motor = robot.brain.dc_motor(20, 21)   # IN1, IN2
+right_motor = robot.brain.dc_motor(19, 26)  # IN1, IN2
 
 
 def drive(left, right, seconds):

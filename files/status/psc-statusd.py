@@ -6,12 +6,15 @@ GPIO start button into the same Astoria start event that the web UI's Start
 button sends, and plays sounds on the buzzer: system sounds, and tones requested
 by robot code through robot.buzzer.
 
-    Booting            blue, pulsing
-    No code USB        pink, flashing
-    Waiting for start  green, pulsing slowly (dim)
-    Code running       green
-    Code finished      white (dim)
-    Code crashed       red, flashing
+    Booting                  blue, pulsing
+    No code USB              pink, flashing
+    Waiting for start        green, pulsing slowly (dim)
+    Same, competition mode   yellow, pulsing slowly (dim)
+    Competition USB plugged
+      in, or no code USB yet yellow, flashing rapidly
+    Code running             green
+    Code finished            white (dim)
+    Code crashed             red, flashing
 
 Sounds (defaults; each can be changed in /etc/psc-status.toml):
 
@@ -23,7 +26,7 @@ It also stops DC motors that robot code drove from the Pi's pins when the code
 stops, in case the code was killed before it could stop them itself.
 
 A chain of WS2812 ("NeoPixel") LEDs shows the status on its first LED, and
-the colours robot code sets (robot.leds) on the rest. Robot code's LEDs turn off
+the colour robot code sets (robot.brain.led) on the next. Robot code's LED turns off
 when the code stops. The chain's data is sent on GPIO 18 (PWM, as the Brain Board
 HAT is wired) and GPIO 10 (SPI MOSI) at once, so it works on either pin.
 
@@ -48,6 +51,8 @@ from pathlib import Path
 
 CONFIG_FILE = Path(os.environ.get("PSC_STATUS_CONFIG", "/etc/psc-status.toml"))
 ASTPROCD_TOPIC = "astoria/astprocd"
+ASTDISKD_TOPIC = "astoria/astdiskd"
+ASTMETAD_TOPIC = "astoria/astmetad"
 ROBOT_STATE_TOPIC = "psc/robot/state"
 START_BUTTON_TOPIC = "astoria/broadcast/start_button"
 BUZZER_TOPIC = "psc/buzzer"
@@ -58,6 +63,10 @@ CODE_ACTIVE = ("code_starting", "code_running")
 # How often the LEDs are updated, and how long a flash or pulse takes.
 TICK = 0.05
 FLASH_PERIOD = 1.0
+RAPID_FLASH_PERIOD = 0.2
+# How long the rapid flash shows that a competition USB was plugged in, when the LED
+# then has something else to show.
+COMP_USB_FLASH_SECONDS = 3.0
 PULSE_PERIOD = 2.5
 PULSE_FLOOR = 0.08  # a pulse's dimmest point, so the LED never looks off
 
@@ -67,13 +76,15 @@ class LedPattern:
     """A status on the WS2812 status LED."""
     # (red, green, blue) from 0 to 255, before status_brightness; and its effect.
     colour: tuple[int, int, int]
-    effect: str = "solid"  # "solid", "flash" or "pulse"
+    effect: str = "solid"  # "solid", "flash", "rapid" or "pulse"
 
     def chain(self, now: float) -> tuple[float, float, float]:
         """The status LED's colour at a moment, each part from 0 to 255."""
         level = 1.0
         if self.effect == "flash":
             level = 1.0 if now % FLASH_PERIOD < FLASH_PERIOD / 2 else 0.0
+        elif self.effect == "rapid":
+            level = 1.0 if now % RAPID_FLASH_PERIOD < RAPID_FLASH_PERIOD / 2 else 0.0
         elif self.effect == "pulse":
             # A sine wave, squared so it looks even to the eye (LEDs look much
             # brighter at low levels than their duty cycle).
@@ -86,6 +97,8 @@ BOOTING = LedPattern((0, 0, 255), "pulse")
 NO_USB = LedPattern((255, 0, 110), "flash")
 READY = LedPattern((60, 60, 60))
 WAITING_FOR_START = LedPattern((0, 140, 0), "pulse")
+COMP_WAITING_FOR_START = LedPattern((140, 95, 0), "pulse")
+COMP_USB = LedPattern((255, 170, 0), "rapid")
 RUNNING = LedPattern((0, 255, 0))
 CRASHED = LedPattern((255, 0, 0), "flash")
 
@@ -102,10 +115,26 @@ DEFAULT_CODE_VOLUME = 50
 SILENCE: Sound = []
 
 
+def is_competition_usb(path: str) -> bool:
+    """
+    Whether a mounted disk is a competition USB, by the same rule as Astoria: it has an
+    astoria.json, and no robot.py to make it a code USB. astdiskd only publishes paths.
+    """
+    disk = Path(path)
+    try:
+        return (disk / "astoria.json").exists() and not (disk / "robot.py").exists()
+    except OSError:
+        return False
+
+
 class RobotStatus:
     """Track Astoria's code status and the robot's start state."""
 
-    def __init__(self) -> None:
+    def __init__(self, is_comp_usb=is_competition_usb) -> None:
+        self._is_comp_usb = is_comp_usb
+        self.comp_usb_present = False
+        self.comp_usb_flash_until = 0.0
+        self.competition_mode = False
         self._lock = threading.Lock()
         self.connected = False
         self.astprocd_running = False
@@ -113,6 +142,13 @@ class RobotStatus:
         self.usb_present = False
         self.waiting_for_start = False
         self.sounds = dict(DEFAULT_SOUNDS)
+
+    def _update_disks(self, disks: object, now: float) -> None:
+        paths = disks.values() if isinstance(disks, dict) else ()
+        present = any(self._is_comp_usb(str(path)) for path in paths)
+        if present and not self.comp_usb_present:
+            self.comp_usb_flash_until = now + COMP_USB_FLASH_SECONDS
+        self.comp_usb_present = present
 
     def handle(self, topic: str, payload: bytes) -> Sound | None:
         """Update the status from an MQTT message; return a sound to play, if any."""
@@ -139,6 +175,11 @@ class RobotStatus:
                     # playing. Done on every such message, not just on a change,
                     # so a missed status change can't leave the buzzer on.
                     return SILENCE
+            elif topic == ASTDISKD_TOPIC:
+                self._update_disks(message.get("disks"), time.monotonic())
+            elif topic == ASTMETAD_TOPIC:
+                metadata = message.get("metadata")
+                self.competition_mode = isinstance(metadata, dict) and metadata.get("mode") == "COMP"
             elif topic == ROBOT_STATE_TOPIC:
                 state = message.get("data")
                 was_waiting = self.waiting_for_start
@@ -158,16 +199,22 @@ class RobotStatus:
         with self._lock:
             self.connected = connected
 
-    def pattern(self) -> LedPattern:
+    def pattern(self, now: float | None = None) -> LedPattern:
+        now = time.monotonic() if now is None else now
         with self._lock:
             if not (self.connected and self.astprocd_running):
                 return BOOTING
+            # Plugging in a competition USB always shows, whatever the robot is doing.
+            if now < self.comp_usb_flash_until:
+                return COMP_USB
             if self.code_status == "code_crashed":
                 return CRASHED
             if self.code_status in ("code_starting", "code_running"):
-                return WAITING_FOR_START if self.waiting_for_start else RUNNING
+                if not self.waiting_for_start:
+                    return RUNNING
+                return COMP_WAITING_FOR_START if self.competition_mode else WAITING_FOR_START
             if not self.usb_present:
-                return NO_USB
+                return COMP_USB if self.comp_usb_present else NO_USB
             # Finished or killed: ready for the next run.
             return READY
 
@@ -370,7 +417,7 @@ class LedChain:
         self._show(refresh=True)
 
     def set_user(self, payload: bytes) -> None:
-        """Set robot code's LEDs from a robot.leds message, ignoring invalid ones."""
+        """Set robot code's LED from a robot.brain.led message, ignoring invalid ones."""
         try:
             colours = json.loads(payload)["colours"]
             colours = [tuple(int(part) for part in colour) for colour in colours]
@@ -571,7 +618,8 @@ def main() -> None:
         if reason_code.is_failure:
             return
         status.set_connected(True)
-        client.subscribe([(ASTPROCD_TOPIC, 0), (ROBOT_STATE_TOPIC, 0), (BUZZER_TOPIC, 0),
+        client.subscribe([(ASTPROCD_TOPIC, 0), (ASTDISKD_TOPIC, 0), (ASTMETAD_TOPIC, 0),
+                          (ROBOT_STATE_TOPIC, 0), (BUZZER_TOPIC, 0),
                           (MOTORS_TOPIC, 0), (LEDS_TOPIC, 0)])
 
     def on_disconnect(client, userdata, flags, reason_code, properties=None):

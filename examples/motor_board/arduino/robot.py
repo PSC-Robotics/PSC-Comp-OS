@@ -18,7 +18,7 @@ must both go to PWM pins: on an Uno these are 3, 5, 6, 9, 10 and 11 (marked ~).
 The motor battery's ground must be joined to the Arduino's ground (the GND
 connections above do this). Never power the motors from the Arduino.
 
-Needs PSC Robotics OS 2026.0.15 or later, and version 6 or later of the PSC
+Needs version 6 or later of the PSC
 Arduino firmware (download it from the Arduino page of the docs). Copy this file
 to the top of your USB stick, named robot.py, and press the start button.
 """

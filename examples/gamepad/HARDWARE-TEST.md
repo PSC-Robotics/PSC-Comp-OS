@@ -1,4 +1,4 @@
-# Gamepad hardware test (PSC Robotics OS 2026.0.16)
+# Gamepad hardware test
 
 Run this on a **Pi 3** and a **Pi 4**. Everything below was tested off-device
 (real Linux input layer, a mock BlueZ, the web page in a browser), but radio,
@@ -35,12 +35,11 @@ Put `examples/gamepad/robot.py` on the code USB:
       back on carries on.
 
 ## 4. Competition USB
-- [ ] A stick with `autonomous/zone-0/astoria.json`: Bluetooth controllers
+- [ ] A stick with `zone-0/astoria.json`: Bluetooth controllers
       disconnect, the Gamepads window says Bluetooth is switched off, the
       robot's Wi-Fi network disappears (use Ethernet or wait), USB pads still work.
 - [ ] Remove the stick: Wi-Fi and Bluetooth come back, controllers reconnect.
-- [ ] A `driver-controlled` stick: controllers keep working; `robot.mode` is
-      `COMP` and `robot.zone` matches the stick.
+- [ ] With the stick in, `robot.mode` is `COMP` and `robot.zone` matches the stick.
 
 If something fails, the most useful thing to send is:
 `journalctl -u psc-gamepadd -u bluetooth -u hciuart -b > /tmp/bt.log`

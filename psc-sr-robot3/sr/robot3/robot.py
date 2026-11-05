@@ -14,17 +14,17 @@ from . import game_specific, pin_motors, timeout
 from ._version import __version__
 from .arduino import Arduino
 from .astoria import Metadata, RobotMode, init_astoria_mqtt
+from .brain import Brain
 from .bus_servo import BusServoAdapter
 from .buzzer import Buzzer
 from .camera import AprilCamera, _setup_cameras
 from .exceptions import MetadataNotReadyError
 from .gamepad import Gamepad, GamepadManager
 from .kch import KCH
-from .leds import LEDStrip, chain_leds, user_led_count
+from .leds import BrainLED
 from .logging import log_to_debug, setup_logging
 from .motor_board import MotorBoard
 from .power_board import Note, PowerBoard
-from .raspberry_pi import RaspberryPi
 from .raw_serial import RawSerial
 from .servo_board import ServoBoard
 from .simulator.time_server import TimeServer
@@ -57,8 +57,8 @@ class Robot(metaclass=FinalMeta):
     __slots__ = (
         '_lock', '_metadata', '_power_board', '_motor_boards', '_servo_boards',
         '_arduinos', '_cameras', '_mqtt', '_astoria', '_kch', '_raw_ports',
-        '_time_server', '_no_powerboard', '_buzzer', '_raspberry_pi', '_bus_servo_adapters',
-        '_gamepads', '_leds',
+        '_time_server', '_no_powerboard', '_buzzer', '_brain', '_bus_servo_adapters',
+        '_gamepads',
     )
 
     def __init__(
@@ -159,11 +159,9 @@ class Robot(metaclass=FinalMeta):
         manual_servoboards = manual_boards.get(ServoBoard.get_board_type(), [])
         manual_arduinos = manual_boards.get(Arduino.get_board_type(), [])
 
-        self._leds = LEDStrip(self._mqtt, 0 if IN_SIMULATOR else user_led_count())
-        user_leds = chain_leds(self._leds)
-        self._kch = KCH(user_leds)
+        self._kch = KCH()
         self._buzzer = Buzzer(self._mqtt, self.sleep)
-        self._raspberry_pi = RaspberryPi(leds=user_leds)
+        self._brain = Brain(led=BrainLED(self._mqtt))
         self._gamepads = GamepadManager()
         self._motor_boards = MotorBoard._get_supported_boards(manual_motorboards)
         self._servo_boards = ServoBoard._get_supported_boards(manual_servoboards)
@@ -257,22 +255,13 @@ class Robot(metaclass=FinalMeta):
         return self._buzzer
 
     @property
-    def leds(self) -> LEDStrip:
+    def brain(self) -> Brain:
         """
-        Access the WS2812 LEDs chained after the robot's status LED.
+        Access the brain board's LED, and devices wired directly to its GPIO pins.
 
-        :returns: The LEDStrip object
+        :returns: The Brain object
         """
-        return self._leds
-
-    @property
-    def raspberry_pi(self) -> RaspberryPi:
-        """
-        Access devices wired directly to the Raspberry Pi's GPIO header.
-
-        :returns: The RaspberryPi object
-        """
-        return self._raspberry_pi
+        return self._brain
 
     @property
     def gamepad(self) -> Gamepad:

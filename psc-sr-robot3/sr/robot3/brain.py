@@ -1,4 +1,4 @@
-"""Control of devices wired directly to the Raspberry Pi's GPIO header."""
+"""The brain board: its LED, and devices wired directly to its GPIO pins."""
 from __future__ import annotations
 
 import atexit
@@ -10,9 +10,9 @@ from types import ModuleType
 from typing import Callable, Optional
 
 from .i2c import (
-    DEFAULT_SERVO_DRIVER_ADDRESS, I2CBus, ServoDriver, ServoPorts, SoftwareI2CBus,
+    DEFAULT_SERVO_DRIVER_ADDRESS, SERVO_DRIVER_USER, I2CBus, ServoDriver, SoftwareI2CBus,
 )
-from .leds import STATUS_CONFIG
+from .leds import STATUS_CONFIG, BrainLED
 from .logging import log_to_debug
 from .pin_motors import DCMotor, Stepper, register_driven_pins
 
@@ -43,8 +43,8 @@ DC_MOTOR_PWM_HZ = 1000
 def reserved_pins(config_file: Path = STATUS_CONFIG) -> dict[int, str]:
     """
     The pins the robot itself uses, so robot code can't, and what uses each, from
-    the status service's config: the start button, the buzzer and the WS2812 LED
-    chain's data pins (with the rest of the SPI port if GPIO 10 is one). Missing
+    the status service's config: the start button, the buzzer and the LEDs' data
+    pins (with the rest of the SPI port if GPIO 10 is one). Missing
     settings take the service's defaults.
     """
     try:
@@ -80,14 +80,14 @@ def _load_gpio() -> ModuleType:
         import RPi.GPIO as GPIO  # isort: ignore
     except (ImportError, RuntimeError) as error:
         raise RuntimeError(
-            "Raspberry Pi GPIO is only available when running on the robot"
+            "The brain board's GPIO pins are only available when running on the robot"
         ) from error
     return GPIO
 
 
-class RaspberryPi:
+class Brain:
     """
-    Devices wired directly to the brain board's Raspberry Pi GPIO header.
+    The brain board: its LED, and devices wired directly to its GPIO pins.
 
     Supports DC motor drivers (such as the DRV8871), stepper motor drivers, I2C
     devices and PCA9685 servo drivers.
@@ -96,25 +96,25 @@ class RaspberryPi:
 
     :param gpio_loader: Returns the RPi.GPIO module; replaced in tests.
     :param clock_ns: A monotonic clock in nanoseconds; replaced in tests.
-    :param leds: The user LEDs (LED_A to LED_C).
+    :param led: The LED your code controls.
     :param reserved: Pins robot code can't use, and what uses each; read from the
         status service's config if not given.
     :param i2c: The I2C bus; replaced in tests.
     """
     __slots__ = (
         '_gpio', '_gpio_loader', '_clock_ns', '_pin_modes', '_pwms', '_motors', '_claims',
-        '_leds', '_reserved', '_i2c', '_i2c_buses', '_servo_drivers',
+        '_led', '_reserved', '_i2c', '_i2c_buses', '_servo_drivers',
     )
 
     def __init__(
         self,
         gpio_loader: Callable[[], ModuleType] = _load_gpio,
         clock_ns: Callable[[], int] = time.perf_counter_ns,
-        leds: tuple = (),
+        led: Optional[BrainLED] = None,
         reserved: Optional[dict[int, str]] = None,
         i2c: Optional[I2CBus] = None,
     ) -> None:
-        self._leds = leds
+        self._led = BrainLED(None) if led is None else led
         self._i2c = I2CBus() if i2c is None else i2c
         self._i2c_buses: dict[tuple, SoftwareI2CBus] = {}
         self._servo_drivers: dict[tuple[I2CBus, int], ServoDriver] = {}
@@ -129,63 +129,44 @@ class RaspberryPi:
         self._claims: dict[int, tuple] = {}
 
     @property
-    def leds(self) -> tuple:
+    def led(self) -> BrainLED:
         """
-        The user LEDs: WS2812s chained after the status LED. Set one with
-        ``robot.raspberry_pi.leds[LED_A].colour = Colour.RED``, as on Student
-        Robotics' KCH board.
+        The LED your code controls. Set it with
+        ``robot.brain.led.colour = Colour.RED``.
         """
-        return self._leds
-
-    @property
-    def i2c(self) -> I2CBus:
-        """
-        The I2C bus, on GPIO 2 (SDA, header pin 3) and GPIO 3 (SCL, pin 5). Use
-        ``i2c.scan()`` to list devices and ``i2c.device(address)`` to talk to one.
-        """
-        return self._i2c
-
-    @property
-    def servos(self) -> ServoPorts:
-        """
-        The servos on a PCA9685 servo driver at I2C address 0x40, by port from 0 to 15.
-        Move one with ``robot.raspberry_pi.servos[0].position = 0.5``, as on Student
-        Robotics' servo board: positions go from -1 to 1.
-        """
-        return self.servo_driver().servos
+        return self._led
 
     @log_to_debug
     def servo_driver(
         self,
-        address: int = DEFAULT_SERVO_DRIVER_ADDRESS,
         *,
-        sda: Optional[int] = None,
-        scl: Optional[int] = None,
+        sda: int,
+        scl: int,
+        address: int = DEFAULT_SERVO_DRIVER_ADDRESS,
     ) -> ServoDriver:
         """
-        Get a PCA9685 servo driver, for when it isn't at address 0x40 on GPIO 2 and 3.
+        Get a PCA9685 servo driver on two GPIO pins.
 
-        Giving ``sda`` and ``scl`` uses an I2C bus on those pins, creating it if needed.
+        This uses the I2C bus on those pins, creating it if needed, so other I2C devices
+        can share the pins through ``i2c_bus``.
 
-        :param address: The driver's I2C address.
         :param sda: The BCM GPIO number connected to the driver's SDA pin.
         :param scl: The BCM GPIO number connected to the driver's SCL pin.
-        :raises ValueError: If the address or a pin is invalid, or only one pin is given.
+        :param address: The driver's I2C address.
+        :raises ValueError: If the address or a pin is invalid, or the address is
+            already used by another device on those pins.
         """
-        if (sda is None) != (scl is None):
-            raise ValueError("Give both sda and scl, or neither to use GPIO 2 and 3")
-        bus = self._i2c if sda is None or scl is None else self.i2c_bus(sda, scl)
-        device = bus.device(address)
+        bus = self.i2c_bus(sda, scl)
         key = (bus, address)
         if key not in self._servo_drivers:
-            self._servo_drivers[key] = ServoDriver(device)
+            self._servo_drivers[key] = ServoDriver(bus._reserve(address, SERVO_DRIVER_USER))
         return self._servo_drivers[key]
 
     @log_to_debug
     def i2c_bus(self, sda: int, scl: int) -> I2CBus:
         """
-        Get an I2C bus on any two free GPIO pins, for example when two devices have the
-        same address. Asking for the same pins again returns the same bus.
+        Get the I2C bus on two free GPIO pins, creating it if needed. Asking for the
+        same pins again, including pins a servo driver uses, returns the same bus.
 
         :param sda: The BCM GPIO number of the data pin.
         :param scl: The BCM GPIO number of the clock pin.
