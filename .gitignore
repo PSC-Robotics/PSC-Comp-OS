@@ -31,3 +31,4 @@ py-packages.txt
 *.img.xz
 *.log
 .DS_Store
+__pycache__/

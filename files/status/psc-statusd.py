@@ -1,16 +1,17 @@
 #!/usr/bin/env python3
 """PSC Robotics status LED, buzzer and start button service.
 
-Shows the robot's state on an RGB LED, turns presses of a GPIO start button
-into the same Astoria start event that the web UI's Start button sends, and
-plays sounds on the buzzer: system sounds, and tones requested by robot code
-through robot.buzzer.
+Shows the robot's state on the first LED of a WS2812 chain, turns presses of a
+GPIO start button into the same Astoria start event that the web UI's Start
+button sends, and plays sounds on the buzzer: system sounds, and tones requested
+by robot code through robot.buzzer.
 
-    Booting            blue, flashing
-    Ready              green
-    Waiting for start  green, flashing
-    Code running       blue
-    Code crashed       red
+    Booting            blue, pulsing
+    No code USB        pink, flashing
+    Waiting for start  green, pulsing slowly (dim)
+    Code running       green
+    Code finished      white (dim)
+    Code crashed       red, flashing
 
 Sounds (defaults; each can be changed in /etc/psc-status.toml):
 
@@ -21,15 +22,24 @@ Sounds (defaults; each can be changed in /etc/psc-status.toml):
 It also stops DC motors that robot code drove from the Pi's pins when the code
 stops, in case the code was killed before it could stop them itself.
 
-Pins, LED polarity, buzzer type, volume and sounds are set in
+A chain of WS2812 ("NeoPixel") LEDs shows the status on its first LED, and
+the colours robot code sets (robot.leds) on the rest. Robot code's LEDs turn off
+when the code stops. The chain's data is sent on GPIO 18 (PWM, as the Brain Board
+HAT is wired) and GPIO 10 (SPI MOSI) at once, so it works on either pin.
+
+Pins, LED polarity, the LED chain, buzzer type, volume and sounds are set in
 /etc/psc-status.toml.
 """
 from __future__ import annotations
 
+import atexit
+import fcntl
 import json
+import math
 import os
 import queue
 import signal
+import struct
 import threading
 import time
 import tomllib
@@ -42,25 +52,42 @@ ROBOT_STATE_TOPIC = "psc/robot/state"
 START_BUTTON_TOPIC = "astoria/broadcast/start_button"
 BUZZER_TOPIC = "psc/buzzer"
 MOTORS_TOPIC = "psc/motors"
+LEDS_TOPIC = "psc/leds"
 CODE_ACTIVE = ("code_starting", "code_running")
 
-OFF = (False, False, False)
-RED = (True, False, False)
-GREEN = (False, True, False)
-BLUE = (False, False, True)
+# How often the LEDs are updated, and how long a flash or pulse takes.
+TICK = 0.05
+FLASH_PERIOD = 1.0
+PULSE_PERIOD = 2.5
+PULSE_FLOOR = 0.08  # a pulse's dimmest point, so the LED never looks off
 
 
 @dataclass(frozen=True)
 class LedPattern:
-    colour: tuple[bool, bool, bool]
-    flashing: bool = False
+    """A status on the WS2812 status LED."""
+    # (red, green, blue) from 0 to 255, before status_brightness; and its effect.
+    colour: tuple[int, int, int]
+    effect: str = "solid"  # "solid", "flash" or "pulse"
+
+    def chain(self, now: float) -> tuple[float, float, float]:
+        """The status LED's colour at a moment, each part from 0 to 255."""
+        level = 1.0
+        if self.effect == "flash":
+            level = 1.0 if now % FLASH_PERIOD < FLASH_PERIOD / 2 else 0.0
+        elif self.effect == "pulse":
+            # A sine wave, squared so it looks even to the eye (LEDs look much
+            # brighter at low levels than their duty cycle).
+            wave = (1 - math.cos(2 * math.pi * now / PULSE_PERIOD)) / 2
+            level = PULSE_FLOOR + (1 - PULSE_FLOOR) * wave * wave
+        return tuple(part * level for part in self.colour)  # type: ignore[return-value]
 
 
-BOOTING = LedPattern(BLUE, flashing=True)
-READY = LedPattern(GREEN)
-WAITING_FOR_START = LedPattern(GREEN, flashing=True)
-RUNNING = LedPattern(BLUE)
-CRASHED = LedPattern(RED)
+BOOTING = LedPattern((0, 0, 255), "pulse")
+NO_USB = LedPattern((255, 0, 110), "flash")
+READY = LedPattern((60, 60, 60))
+WAITING_FOR_START = LedPattern((0, 140, 0), "pulse")
+RUNNING = LedPattern((0, 255, 0))
+CRASHED = LedPattern((255, 0, 0), "flash")
 
 # Sounds are lists of (frequency in Hz, seconds, volume); a frequency or volume of
 # 0 is silence. Volume is the PWM duty cycle in percent: 50 is a passive
@@ -83,6 +110,7 @@ class RobotStatus:
         self.connected = False
         self.astprocd_running = False
         self.code_status: str | None = None
+        self.usb_present = False
         self.waiting_for_start = False
         self.sounds = dict(DEFAULT_SOUNDS)
 
@@ -97,6 +125,7 @@ class RobotStatus:
         with self._lock:
             if topic == ASTPROCD_TOPIC:
                 self.astprocd_running = message.get("status") == "RUNNING"
+                self.usb_present = message.get("disk_info") is not None
                 code_status = message.get("code_status")
                 changed = code_status != self.code_status
                 if changed:
@@ -137,7 +166,9 @@ class RobotStatus:
                 return CRASHED
             if self.code_status in ("code_starting", "code_running"):
                 return WAITING_FOR_START if self.waiting_for_start else RUNNING
-            # No code, finished or killed: ready for the next run.
+            if not self.usb_present:
+                return NO_USB
+            # Finished or killed: ready for the next run.
             return READY
 
 
@@ -221,12 +252,194 @@ class BuzzerPlayer:
                 sound = self._requests.get()
 
 
+class SpiLeds:
+    """
+    A chain of WS2812 LEDs on SPI0 MOSI (GPIO 10).
+
+    Each WS2812 bit is sent as 4 SPI bits at about 3.2MHz: a 0 is high for one
+    SPI bit (about 310ns) then low for three, a 1 is high for three then low.
+    The SPI clock comes from the core clock, which the image fixes (core_freq).
+    """
+
+    SPI_IOC_WR_MODE = 0x40016B01
+    SPI_IOC_WR_BITS_PER_WORD = 0x40016B03
+    SPI_IOC_WR_MAX_SPEED_HZ = 0x40046B04
+    SPI_HZ = 3_200_000
+    # Low bytes before and after the data: the LEDs latch the colours after 280us
+    # low. This also makes every transfer long enough for the SPI driver to send it
+    # by DMA, without gaps.
+    RESET_BYTES = 128
+    MAX_TRANSFER = 4096  # the spidev driver's default largest transfer
+    MAX_COUNT = (MAX_TRANSFER - 2 * RESET_BYTES) // 12
+
+    pin = 10
+
+    def __init__(self, device: str, count: int) -> None:
+        self.count = count
+        self._fd = os.open(device, os.O_WRONLY)
+        try:
+            fcntl.ioctl(self._fd, self.SPI_IOC_WR_MODE, struct.pack("B", 0))
+            fcntl.ioctl(self._fd, self.SPI_IOC_WR_BITS_PER_WORD, struct.pack("B", 8))
+            fcntl.ioctl(self._fd, self.SPI_IOC_WR_MAX_SPEED_HZ, struct.pack("I", self.SPI_HZ))
+        except OSError:
+            os.close(self._fd)
+            raise
+        self._encoded = [self._encode(value) for value in range(256)]
+
+    @staticmethod
+    def _encode(value: int) -> bytes:
+        bits = 0
+        for i in range(7, -1, -1):
+            bits = (bits << 4) | (0b1110 if value >> i & 1 else 0b1000)
+        return bits.to_bytes(4, "big")
+
+    def show(self, colours: list[tuple[int, int, int]]) -> None:
+        data = bytearray(self.RESET_BYTES)
+        for red, green, blue in colours[:self.count]:
+            for value in (green, red, blue):  # WS2812s take green first
+                data += self._encoded[value]
+        data += bytes(self.RESET_BYTES)
+        os.write(self._fd, data)
+
+    def close(self) -> None:
+        try:
+            self.show([(0, 0, 0)] * self.count)
+        finally:
+            os.close(self._fd)
+
+
+class PwmLeds:
+    """
+    A chain of WS2812 LEDs on GPIO 18, driven by the Pi's PWM hardware through
+    rpi_ws281x. Needs root, and the analogue audio off (dtparam=audio=off), as
+    that also uses the PWM hardware.
+    """
+
+    pin = 18
+    DMA_CHANNEL = 10
+
+    def __init__(self, count: int) -> None:
+        from rpi_ws281x import PixelStrip, WS2811_STRIP_GRB
+
+        self.count = count
+        self._strip = PixelStrip(count, self.pin, 800_000, self.DMA_CHANNEL, False, 255, 0,
+                                 WS2811_STRIP_GRB)
+        try:
+            self._strip.begin()  # raises RuntimeError if it can't
+        except Exception:
+            # Its exit handler would free hardware it never set up, and crash.
+            atexit.unregister(self._strip._cleanup)
+            raise
+
+    def show(self, colours: list[tuple[int, int, int]]) -> None:
+        for i in range(self.count):
+            red, green, blue = colours[i] if i < len(colours) else (0, 0, 0)
+            self._strip.setPixelColorRGB(i, red, green, blue)
+        self._strip.show()
+
+    def close(self) -> None:
+        self.show([])
+        # rpi_ws281x has no close; its exit handler releases the hardware.
+
+
+class LedChain:
+    """
+    What the WS2812 chain shows: the status on the first LED (if status_led is on)
+    and robot code's colours on the rest. Writes the LEDs when something changes,
+    and again on every status update (20 times a second, for smooth effects), so
+    LEDs connected or glitched after a change still show the right colours.
+    """
+
+    def __init__(self, strips: list, status_led: bool, status_brightness: float,
+                 brightness: float) -> None:
+        self._strips = strips
+        self.count = max(strip.count for strip in strips)
+        self._status_led = status_led
+        self._status_brightness = status_brightness
+        self._brightness = brightness
+        self._lock = threading.Lock()
+        self._status = (0, 0, 0)
+        self._user = [(0, 0, 0)] * (self.count - 1 if status_led else self.count)
+        self._shown: list[tuple[int, int, int]] | None = None
+
+    def set_status(self, colour: tuple[float, float, float]) -> None:
+        """Set the status LED to (red, green, blue), each from 0 to 255."""
+        with self._lock:
+            self._status = tuple(  # type: ignore[assignment]
+                round(part * self._status_brightness) for part in colour)
+        self._show(refresh=True)
+
+    def set_user(self, payload: bytes) -> None:
+        """Set robot code's LEDs from a robot.leds message, ignoring invalid ones."""
+        try:
+            colours = json.loads(payload)["colours"]
+            colours = [tuple(int(part) for part in colour) for colour in colours]
+        except (ValueError, TypeError, KeyError):
+            return
+        if not all(len(c) == 3 and all(0 <= part <= 255 for part in c) for c in colours):
+            return
+        with self._lock:
+            for i, colour in enumerate(colours[:len(self._user)]):
+                self._user[i] = tuple(round(part * self._brightness) for part in colour)
+        self._show()
+
+    def clear_user(self) -> None:
+        with self._lock:
+            self._user = [(0, 0, 0)] * len(self._user)
+        self._show()
+
+    def _show(self, refresh: bool = False) -> None:
+        with self._lock:
+            colours = ([self._status] if self._status_led else []) + self._user
+            if colours == self._shown and not refresh:
+                return
+            self._shown = colours
+            for strip in self._strips:
+                try:
+                    strip.show(colours)
+                except Exception as error:
+                    print(f"Failed to set the LED chain on GPIO {strip.pin}: {error}", flush=True)
+
+    def close(self) -> None:
+        with self._lock:
+            for strip in self._strips:
+                try:
+                    strip.close()
+                except Exception as error:
+                    print(f"Failed to turn off the LED chain on GPIO {strip.pin}: {error}",
+                          flush=True)
+
+
+def open_led_chain(config: dict) -> LedChain | None:
+    """
+    The WS2812 chain on each of its pins that works, or None if it's turned off or
+    no pin works.
+    """
+    strip = config["led_strip"]
+    if not strip["enabled"] or strip["count"] == 0:
+        return None
+    strips = []
+    for pin in strip["pins"]:
+        try:
+            if pin == SpiLeds.pin:
+                strips.append(SpiLeds(strip["device"], strip["count"]))
+            else:
+                strips.append(PwmLeds(strip["count"]))
+        except Exception as error:
+            hint = ("check dtparam=spi=on is in /boot/firmware/config.txt" if pin == SpiLeds.pin
+                    else "check rpi_ws281x is installed and dtparam=audio=off")
+            print(f"WS2812 LED chain not on GPIO {pin} ({error}); {hint}", flush=True)
+    if not strips:
+        return None
+    print(f"WS2812 LED chain: {strip['count']} LEDs on GPIO "
+          f"{' and '.join(str(s.pin) for s in strips)}", flush=True)
+    return LedChain(strips, strip["status_led"], strip["status_brightness"],
+                    strip["brightness"])
+
+
 def load_config(path: Path = CONFIG_FILE) -> dict:
     config = tomllib.loads(path.read_text())
-    led, button = config["led"], config["start_button"]
-    for name in ("red", "green", "blue"):
-        if not isinstance(led.get(name), int):
-            raise ValueError(f"led.{name} must be a BCM pin number")
+    button = config["start_button"]
     if not isinstance(button.get("pin"), int):
         raise ValueError("start_button.pin must be a BCM pin number")
     buzzer = config.setdefault("buzzer", {})
@@ -237,6 +450,27 @@ def load_config(path: Path = CONFIG_FILE) -> dict:
     volume = buzzer.setdefault("code_volume", DEFAULT_CODE_VOLUME)
     if not isinstance(volume, (int, float)) or not 0 <= volume <= 50:
         raise ValueError("buzzer.code_volume must be from 0 to 50")
+    strip = config.setdefault("led_strip", {})
+    strip.setdefault("enabled", True)
+    strip.setdefault("count", 2)
+    strip.setdefault("status_led", True)
+    strip.setdefault("status_brightness", 0.2)
+    strip.setdefault("brightness", 1.0)
+    strip.setdefault("pins", [18])
+    strip.setdefault("device", "/dev/spidev0.0")
+    pins = strip["pins"]
+    if not isinstance(pins, list) or not set(pins) <= {10, 18} or len(set(pins)) != len(pins):
+        raise ValueError("led_strip.pins must list GPIO 18, GPIO 10 or both")
+    for name in ("enabled", "status_led"):
+        if not isinstance(strip[name], bool):
+            raise ValueError(f"led_strip.{name} must be true or false")
+    count = strip["count"]
+    if isinstance(count, bool) or not isinstance(count, int) or not 0 <= count <= SpiLeds.MAX_COUNT:
+        raise ValueError(f"led_strip.count must be from 0 to {SpiLeds.MAX_COUNT}")
+    for name in ("status_brightness", "brightness"):
+        value = strip[name]
+        if isinstance(value, bool) or not isinstance(value, (int, float)) or not 0 <= value <= 1:
+            raise ValueError(f"led_strip.{name} must be from 0 to 1")
     sounds = buzzer.setdefault("sounds", {})
     for name in sounds:
         if name not in DEFAULT_SOUNDS:
@@ -318,22 +552,20 @@ def main() -> None:
     import RPi.GPIO as GPIO
 
     config = load_config()
-    led, button = config["led"], config["start_button"]
-    pins = (led["red"], led["green"], led["blue"])
-    on, off = (GPIO.HIGH, GPIO.LOW) if led.get("active_high", True) else (GPIO.LOW, GPIO.HIGH)
+    button = config["start_button"]
     status = RobotStatus()
     status.sounds = config["buzzer"]["sounds"]
     stop = threading.Event()
 
     GPIO.setwarnings(False)
     GPIO.setmode(GPIO.BCM)
-    GPIO.setup(list(pins), GPIO.OUT, initial=off)
     pull = GPIO.PUD_UP if button.get("pull", "up") == "up" else GPIO.PUD_DOWN
     GPIO.setup(button["pin"], GPIO.IN, pull_up_down=pull)
     buzzer_config = config["buzzer"]
     buzzer = BuzzerPlayer(GPIO, buzzer_config.get("pin", 13),
                           passive=buzzer_config.get("type", "passive") == "passive")
-    motors = MotorGuard(GPIO, {*pins, button["pin"], buzzer_config.get("pin", 13)})
+    motors = MotorGuard(GPIO, {button["pin"], buzzer_config.get("pin", 13)})
+    leds = open_led_chain(config)
 
     client = mqtt.Client(mqtt.CallbackAPIVersion.VERSION2, client_id="psc-statusd")
     client.reconnect_delay_set(min_delay=1, max_delay=5)
@@ -343,7 +575,7 @@ def main() -> None:
             return
         status.set_connected(True)
         client.subscribe([(ASTPROCD_TOPIC, 0), (ROBOT_STATE_TOPIC, 0), (BUZZER_TOPIC, 0),
-                          (MOTORS_TOPIC, 0)])
+                          (MOTORS_TOPIC, 0), (LEDS_TOPIC, 0)])
 
     def on_disconnect(client, userdata, flags, reason_code, properties=None):
         status.set_connected(False)
@@ -354,6 +586,11 @@ def main() -> None:
         if msg.topic == MOTORS_TOPIC:
             motors.update(msg.payload)
             return
+        if msg.topic == LEDS_TOPIC:
+            # Only while code runs, so a late message can't light them after it ends.
+            if leds is not None and status.code_active:
+                leds.set_user(msg.payload)
+            return
         if msg.topic == BUZZER_TOPIC:
             sound = buzz_request(msg.payload, buzzer_config["code_volume"])
         else:
@@ -361,6 +598,8 @@ def main() -> None:
             sound = status.handle(msg.topic, msg.payload)
             if was_active and not status.code_active:
                 motors.stop()
+                if leds is not None:
+                    leds.clear_user()
         if sound is not None:
             buzzer.play(sound)
 
@@ -383,20 +622,18 @@ def main() -> None:
                          config.get("mqtt", {}).get("port", 1883))
     client.loop_start()
 
-    print(f"psc-statusd: LED red/green/blue = BCM {pins}, start button = BCM {button['pin']}, "
+    print(f"psc-statusd: start button = BCM {button['pin']}, "
           f"buzzer = BCM {buzzer_config.get('pin', 13)} ({buzzer_config.get('type', 'passive')})", flush=True)
     try:
-        phase = False
         while not stop.is_set():
-            pattern = status.pattern()
-            phase = not phase
-            colour = pattern.colour if (phase or not pattern.flashing) else OFF
-            GPIO.output(list(pins), [on if lit else off for lit in colour])
-            stop.wait(0.5)
+            if leds is not None:
+                leds.set_status(status.pattern().chain(time.monotonic()))
+            stop.wait(TICK)
     finally:
         client.loop_stop()
         buzzer.close()
-        GPIO.output(list(pins), off)
+        if leds is not None:
+            leds.close()
         GPIO.cleanup()
 
 

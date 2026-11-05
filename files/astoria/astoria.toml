@@ -5,7 +5,7 @@
 #
 # Custom GPIO hat wiring for the PSC robot (BCM numbers, header pins in brackets):
 # - Start button: BCM 5 (pin 29), wired to GND
-# - RGB status LED: BCM 17 blue (pin 11), BCM 27 green (pin 13), BCM 22 red (pin 15)
+# - WS2812 LED chain (the first is the status LED): BCM 18 (pin 12)
 # - Buzzer: pin 33 (unconfirmed; BCM 13 if that is the header pin)
 # The status LED and start button are run by psc-statusd; see /etc/psc-status.toml.
 

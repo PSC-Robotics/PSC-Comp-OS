@@ -2,6 +2,9 @@
 # rpi-lgpio provides the RPi.GPIO module on top of lgpio, which works on every Pi
 # including the Pi 5 (RPi.GPIO itself can't drive the Pi 5's GPIO chip).
 rpi-lgpio>=0.6,<1
+# Drives the WS2812 LED chain on GPIO 18 (psc-statusd). It doesn't support the Pi 5,
+# where the chain uses GPIO 10 by SPI instead.
+rpi_ws281x>=5.0,<6
 kchd==0.4.1
 astoria==0.11.3
 

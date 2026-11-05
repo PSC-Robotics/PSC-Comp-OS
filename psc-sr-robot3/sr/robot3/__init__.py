@@ -1,7 +1,7 @@
 from .arduino import AnalogPins, GPIOPinMode
 from .astoria import RobotMode
 from .exceptions import (
-    BoardDisconnectionError, MetadataKeyError, MetadataNotReadyError,
+    BoardDisconnectionError, I2CError, MetadataKeyError, MetadataNotReadyError,
 )
 from .kch import Colour, UserLED
 from .logging import add_trace_level
@@ -54,6 +54,7 @@ __all__ = [
     "COMP",
     "Colour",
     "DEV",
+    "I2CError",
     "INPUT",
     "INPUT_PULLUP",
     "LED_A",

@@ -140,7 +140,7 @@ def test_robot_without_sr_boards(monkeypatch) -> None:
     monkeypatch.setattr('sr.robot3.arduino.comports', lambda: [])
     monkeypatch.setattr('sr.robot3.bus_servo.comports', lambda: [])
     monkeypatch.setattr('sr.robot3.robot.init_astoria_mqtt', lambda: (None, None))
-    monkeypatch.setattr('sr.robot3.robot.KCH', lambda: object())
+    monkeypatch.setattr('sr.robot3.robot.KCH', lambda *args: object())
     monkeypatch.setattr(Robot, '_init_camera', lambda self: setattr(self, '_cameras', {}))
 
     robot = Robot(wait_for_start=False)
@@ -148,7 +148,7 @@ def test_robot_without_sr_boards(monkeypatch) -> None:
         assert robot.motor_boards == {}
         assert robot.servo_boards == {}
         assert robot.arduinos == {}
-        with pytest.raises(RuntimeError, match="No power board was initialized"):
+        with pytest.raises(RuntimeError, match="No power board is connected"):
             _ = robot.power_board
     finally:
         robot._lock.close()
@@ -166,7 +166,7 @@ def test_robot_with_multiple_cameras(monkeypatch) -> None:
     monkeypatch.setattr('sr.robot3.arduino.comports', lambda: [])
     monkeypatch.setattr('sr.robot3.bus_servo.comports', lambda: [])
     monkeypatch.setattr('sr.robot3.robot.init_astoria_mqtt', lambda: (None, None))
-    monkeypatch.setattr('sr.robot3.robot.KCH', lambda: object())
+    monkeypatch.setattr('sr.robot3.robot.KCH', lambda *args: object())
     cameras = {"A1B2C3D4": object(), "usb-1-1.2": object()}
     monkeypatch.setattr(
         Robot, '_init_camera',
@@ -229,6 +229,9 @@ def test_wait_start_announces_state(monkeypatch) -> None:
 
 
 class MockKCH:
+    def __init__(self, *args) -> None:
+        pass
+
     def _flash_start(self) -> None:
         pass
 

@@ -20,6 +20,7 @@ from .camera import AprilCamera, _setup_cameras
 from .exceptions import MetadataNotReadyError
 from .gamepad import Gamepad, GamepadManager
 from .kch import KCH
+from .leds import LEDStrip, chain_leds, user_led_count
 from .logging import log_to_debug, setup_logging
 from .motor_board import MotorBoard
 from .power_board import Note, PowerBoard
@@ -57,7 +58,7 @@ class Robot(metaclass=FinalMeta):
         '_lock', '_metadata', '_power_board', '_motor_boards', '_servo_boards',
         '_arduinos', '_cameras', '_mqtt', '_astoria', '_kch', '_raw_ports',
         '_time_server', '_no_powerboard', '_buzzer', '_raspberry_pi', '_bus_servo_adapters',
-        '_gamepads',
+        '_gamepads', '_leds',
     )
 
     def __init__(
@@ -125,7 +126,6 @@ class Robot(metaclass=FinalMeta):
         power_boards = PowerBoard._get_supported_boards(manual_boards, sleep_fn=self.sleep)
         if not power_boards:
             self._no_powerboard = True
-            logger.info("No power board found; continuing without one.")
             return
 
         self._power_board = singular(power_boards)
@@ -159,9 +159,11 @@ class Robot(metaclass=FinalMeta):
         manual_servoboards = manual_boards.get(ServoBoard.get_board_type(), [])
         manual_arduinos = manual_boards.get(Arduino.get_board_type(), [])
 
-        self._kch = KCH()
+        self._leds = LEDStrip(self._mqtt, 0 if IN_SIMULATOR else user_led_count())
+        user_leds = chain_leds(self._leds)
+        self._kch = KCH(user_leds)
         self._buzzer = Buzzer(self._mqtt, self.sleep)
-        self._raspberry_pi = RaspberryPi()
+        self._raspberry_pi = RaspberryPi(leds=user_leds)
         self._gamepads = GamepadManager()
         self._motor_boards = MotorBoard._get_supported_boards(manual_motorboards)
         self._servo_boards = ServoBoard._get_supported_boards(manual_servoboards)
@@ -255,6 +257,15 @@ class Robot(metaclass=FinalMeta):
         return self._buzzer
 
     @property
+    def leds(self) -> LEDStrip:
+        """
+        Access the WS2812 LEDs chained after the robot's status LED.
+
+        :returns: The LEDStrip object
+        """
+        return self._leds
+
+    @property
     def raspberry_pi(self) -> RaspberryPi:
         """
         Access devices wired directly to the Raspberry Pi's GPIO header.
@@ -333,7 +344,11 @@ class Robot(metaclass=FinalMeta):
         :return: The power board object
         """
         if self._no_powerboard:
-            raise RuntimeError("No power board was initialized")
+            raise RuntimeError(
+                "No power board is connected, so robot.power_board can't be used. The "
+                "Brain Board doesn't need one: use robot.buzzer, and the start button "
+                "on the HAT."
+            )
 
         return self._power_board
 

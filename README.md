@@ -73,25 +73,25 @@ journalctl -u nginx -u psc-camera-calibration
 
 ## Status LED, Buzzer And Start Button
 
-`psc-statusd` shows the robot's state on an RGB LED, plays sounds on a buzzer
-and handles a physical start button. The pins (BCM numbers), LED polarity and
-buzzer type are set in `/etc/psc-status.toml`:
+`psc-statusd` shows the robot's state on the first LED of a WS2812 ("NeoPixel")
+chain, plays sounds on a buzzer and handles a physical start button. The pins
+(BCM numbers), the LED chain and the buzzer type are set in `/etc/psc-status.toml`:
 
 | Signal | BCM | Header pin |
 | --- | --- | --- |
-| LED blue | 17 | 11 |
-| LED green | 27 | 13 |
-| LED red | 22 | 15 |
+| WS2812 LED chain (data in, Brain Board HAT) | 18 | 12 |
+| WS2812 LED chain (data in, alternative; off by default) | 10 | 19 |
 | Start button | 5 | 29 |
-| Buzzer (passive) | 13 | 33 |
+| Buzzer | 13 | 33 |
 
-| LED | Meaning |
+| State | Status LED |
 | --- | --- |
-| Blue, flashing | Booting (solid blue from power-on until the service starts) |
-| Green | Ready |
-| Green, flashing | Robot code is waiting for the start button |
-| Blue | Robot code running |
-| Red | Robot code crashed |
+| Booting | Blue, pulsing |
+| No code USB plugged in | Pink, flashing |
+| Waiting for the start button | Green, pulsing slowly (dim) |
+| Robot code running | Green |
+| Robot code finished or stopped | White (dim) |
+| Robot code crashed | Red, flashing |
 
 | Sound | Meaning |
 | --- | --- |
@@ -108,19 +108,53 @@ play them over MQTT (`psc/buzzer`), so only one process drives the buzzer pin.
 The buzzer is silenced whenever robot code is not running, so a tone left
 playing stops when the code finishes, crashes or is killed.
 
-The LED is common-cathode (`active_high = true`). Wire the start button between
-GPIO 5 and GND; the internal pull-up is enabled. Never connect a GPIO pin to
-5V. A press sends the same start event as the web UI's Start button. If the
-pins change, also update the `gpio=` lines in `/boot/config.txt`.
+Wire the first LED's DIN to GPIO 18 (as on the Brain Board HAT), VDD to 5V and
+GND to GND, and each LED's DOUT to the next one's DIN. Robot code sets the LEDs
+after the status LED with `robot.raspberry_pi.leds[LED_A].colour = Colour.RED`
+(as on Student Robotics' KCH board) or `robot.leds[0] = (255, 0, 0)`, over MQTT
+(`psc/leds`), and they turn off when the code stops. GPIO 18 is driven through
+the PWM hardware (`rpi_ws281x`; the analogue audio output is turned off, as it
+also uses the PWM hardware). Add 10 to `pins` under `[led_strip]` to also send
+the data on GPIO 10 through the SPI port (`dtparam=spi=on`); that also takes GPIO
+7, 8, 9 and 11. Set the number of LEDs with `count` (default 2). The chain lights
+once `psc-statusd` starts, 10 to 20 seconds after power-on. The Pi's 3.3V data
+usually works; if colours flicker, add a level shifter on DIN.
+
+`sr.robot3` reads `/etc/psc-status.toml` to decide which pins robot code can't
+use: the start button, the buzzer and the LED chain's pins, plus 14/15 (serial,
+for bus servos), 2/3 (I2C) and 0/1 (HAT EEPROM). Wire the start button between GPIO 5 and
+GND; the internal pull-up is enabled. Never connect a GPIO pin to 5V. A press
+sends the same start event as the web UI's Start button.
 
 The Student Robotics `kchd` and `boot_40` services are not installed because
 they drive the KCH hat's pins, and robot code runs with `SR_KCH_HAT=0` so the
-API's `robot.kch` LEDs leave these pins alone.
+API's `robot.kch` LEDs use the WS2812 chain instead of those pins.
 
 ```sh
 systemctl status psc-statusd
 journalctl -u psc-statusd
 ```
+
+## I2C And Servo Drivers
+
+I2C is on by default (`dtparam=i2c_arm=on`, the `i2c-dev` module and the `robot`
+user in the `i2c` group), on GPIO 2 (SDA, header pin 3) and GPIO 3 (SCL, pin 5).
+Robot code uses `robot.raspberry_pi.i2c`: `scan()` lists devices, and
+`device(address)` gives `read`, `write`, `send` and `receive`.
+
+`robot.raspberry_pi.servos[0].position = 0.5` moves a servo on a PCA9685 driver at
+address 0x40, with positions from -1 to 1 as on Student Robotics' servo board. Use
+`robot.raspberry_pi.servo_driver(0x41)` for another address. Problems raise
+`I2CError`, with a message saying what to check. See `examples/pca9685` and
+`examples/i2c`.
+
+`robot.raspberry_pi.i2c_bus(sda=23, scl=24)` makes another bus on any two free pins,
+and `servo_driver(sda=23, scl=24)` makes one for a driver. These buses are driven in
+software through RPi.GPIO (`SoftwareI2CBus`), so they need no boot config, and
+addresses only have to differ within one bus. A pin can only belong to one bus or motor.
+
+A power board is optional. `robot.power_board` raises an error if there isn't one,
+and nothing is logged otherwise.
 
 ## Networking And USB
 

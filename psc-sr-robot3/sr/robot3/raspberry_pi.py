@@ -3,21 +3,33 @@ from __future__ import annotations
 
 import atexit
 import logging
+import sys
 import time
+from pathlib import Path
 from types import ModuleType
 from typing import Callable, Optional
 
+from .i2c import (
+    DEFAULT_SERVO_DRIVER_ADDRESS, I2CBus, ServoDriver, ServoPorts, SoftwareI2CBus,
+)
+from .leds import STATUS_CONFIG
 from .logging import log_to_debug
 from .pin_motors import DCMotor, Stepper, register_driven_pins
 
+if sys.version_info >= (3, 11):
+    import tomllib
+else:
+    import tomli as tomllib
+
 LOGGER = logging.getLogger(__name__)
 
-# Pins the robot itself uses: the status LED (17, 27, 22), the start button (5),
-# the buzzer (13) and the serial port for bus servos (14, 15).
-# Pins 0 and 1 are reserved for the HAT EEPROM.
-RESERVED_PINS = {0: "HAT EEPROM", 1: "HAT EEPROM", 5: "the start button", 13: "the buzzer",
-                 14: "the serial port (bus servos)", 15: "the serial port (bus servos)",
-                 17: "the status LED", 22: "the status LED", 27: "the status LED"}
+# Pins the robot always uses: the HAT EEPROM (0, 1), I2C (2, 3) and the serial port for
+# bus servos (14, 15). The rest come from the status service's config: see reserved_pins.
+FIXED_RESERVED_PINS = {0: "HAT EEPROM", 1: "HAT EEPROM",
+                       2: "I2C (SDA)", 3: "I2C (SCL)",
+                       14: "the serial port (bus servos)", 15: "the serial port (bus servos)"}
+# Besides MOSI (GPIO 10), the SPI port also takes these pins.
+SPI_PINS = (7, 8, 9, 11)
 MIN_STEP_DELAY_US = 50
 DEFAULT_STEP_DELAY_US = 1000
 MAX_STEP_DELAY_US = 1_000_000
@@ -26,6 +38,41 @@ STEP_PULSE_US = 5  # comfortably above the 1-2us minimum of common drivers
 DIRECTION_SETUP_US = 5
 # Software PWM frequency for DC motor drivers. The DRV8871 accepts up to 200kHz.
 DC_MOTOR_PWM_HZ = 1000
+
+
+def reserved_pins(config_file: Path = STATUS_CONFIG) -> dict[int, str]:
+    """
+    The pins the robot itself uses, so robot code can't, and what uses each, from
+    the status service's config: the start button, the buzzer and the WS2812 LED
+    chain's data pins (with the rest of the SPI port if GPIO 10 is one). Missing
+    settings take the service's defaults.
+    """
+    try:
+        config = tomllib.loads(config_file.read_text())
+    except (OSError, ValueError):
+        config = {}
+
+    def section(name: str) -> dict:
+        value = config.get(name, {})
+        return value if isinstance(value, dict) else {}
+
+    pins = dict(FIXED_RESERVED_PINS)
+
+    def reserve(pin: object, user: str) -> None:
+        if isinstance(pin, int) and not isinstance(pin, bool) and 0 <= pin <= 27:
+            pins[pin] = user
+
+    reserve(section('start_button').get('pin', 5), "the start button")
+    reserve(section('buzzer').get('pin', 13), "the buzzer")
+    strip = section('led_strip')
+    if strip.get('enabled', True) is True and strip.get('count', 2) != 0:
+        strip_pins = strip.get('pins', [18])
+        for pin in strip_pins if isinstance(strip_pins, list) else []:
+            reserve(pin, "the LED strip (WS2812 data)")
+            if pin == 10:
+                for spi_pin in SPI_PINS:
+                    reserve(spi_pin, "the LED strip's SPI port")
+    return pins
 
 
 def _load_gpio() -> ModuleType:
@@ -42,22 +89,36 @@ class RaspberryPi:
     """
     Devices wired directly to the brain board's Raspberry Pi GPIO header.
 
-    Supports DC motor drivers (such as the DRV8871) and stepper motor drivers.
+    Supports DC motor drivers (such as the DRV8871), stepper motor drivers, I2C
+    devices and PCA9685 servo drivers.
     Pins are given as BCM GPIO numbers (e.g. 23 for GPIO 23, header pin 16),
     not header pin numbers.
 
     :param gpio_loader: Returns the RPi.GPIO module; replaced in tests.
     :param clock_ns: A monotonic clock in nanoseconds; replaced in tests.
+    :param leds: The user LEDs (LED_A to LED_C).
+    :param reserved: Pins robot code can't use, and what uses each; read from the
+        status service's config if not given.
+    :param i2c: The I2C bus; replaced in tests.
     """
     __slots__ = (
         '_gpio', '_gpio_loader', '_clock_ns', '_pin_modes', '_pwms', '_motors', '_claims',
+        '_leds', '_reserved', '_i2c', '_i2c_buses', '_servo_drivers',
     )
 
     def __init__(
         self,
         gpio_loader: Callable[[], ModuleType] = _load_gpio,
         clock_ns: Callable[[], int] = time.perf_counter_ns,
+        leds: tuple = (),
+        reserved: Optional[dict[int, str]] = None,
+        i2c: Optional[I2CBus] = None,
     ) -> None:
+        self._leds = leds
+        self._i2c = I2CBus() if i2c is None else i2c
+        self._i2c_buses: dict[tuple, SoftwareI2CBus] = {}
+        self._servo_drivers: dict[tuple[I2CBus, int], ServoDriver] = {}
+        self._reserved = reserved_pins() if reserved is None else reserved
         self._gpio: Optional[ModuleType] = None
         self._gpio_loader = gpio_loader
         self._clock_ns = clock_ns
@@ -66,6 +127,82 @@ class RaspberryPi:
         # Motors by kind and pins, and which motor uses each pin.
         self._motors: dict[tuple, object] = {}
         self._claims: dict[int, tuple] = {}
+
+    @property
+    def leds(self) -> tuple:
+        """
+        The user LEDs: WS2812s chained after the status LED. Set one with
+        ``robot.raspberry_pi.leds[LED_A].colour = Colour.RED``, as on Student
+        Robotics' KCH board.
+        """
+        return self._leds
+
+    @property
+    def i2c(self) -> I2CBus:
+        """
+        The I2C bus, on GPIO 2 (SDA, header pin 3) and GPIO 3 (SCL, pin 5). Use
+        ``i2c.scan()`` to list devices and ``i2c.device(address)`` to talk to one.
+        """
+        return self._i2c
+
+    @property
+    def servos(self) -> ServoPorts:
+        """
+        The servos on a PCA9685 servo driver at I2C address 0x40, by port from 0 to 15.
+        Move one with ``robot.raspberry_pi.servos[0].position = 0.5``, as on Student
+        Robotics' servo board: positions go from -1 to 1.
+        """
+        return self.servo_driver().servos
+
+    @log_to_debug
+    def servo_driver(
+        self,
+        address: int = DEFAULT_SERVO_DRIVER_ADDRESS,
+        *,
+        sda: Optional[int] = None,
+        scl: Optional[int] = None,
+    ) -> ServoDriver:
+        """
+        Get a PCA9685 servo driver, for when it isn't at address 0x40 on GPIO 2 and 3.
+
+        Giving ``sda`` and ``scl`` uses an I2C bus on those pins, creating it if needed.
+
+        :param address: The driver's I2C address.
+        :param sda: The BCM GPIO number connected to the driver's SDA pin.
+        :param scl: The BCM GPIO number connected to the driver's SCL pin.
+        :raises ValueError: If the address or a pin is invalid, or only one pin is given.
+        """
+        if (sda is None) != (scl is None):
+            raise ValueError("Give both sda and scl, or neither to use GPIO 2 and 3")
+        bus = self._i2c if sda is None or scl is None else self.i2c_bus(sda, scl)
+        device = bus.device(address)
+        key = (bus, address)
+        if key not in self._servo_drivers:
+            self._servo_drivers[key] = ServoDriver(device)
+        return self._servo_drivers[key]
+
+    @log_to_debug
+    def i2c_bus(self, sda: int, scl: int) -> I2CBus:
+        """
+        Get an I2C bus on any two free GPIO pins, for example when two devices have the
+        same address. Asking for the same pins again returns the same bus.
+
+        :param sda: The BCM GPIO number of the data pin.
+        :param scl: The BCM GPIO number of the clock pin.
+        :raises ValueError: If a pin is invalid, reserved, or used by another motor or bus.
+        :raises RuntimeError: If not running on the robot.
+        """
+        if (sda, scl) == (2, 3):
+            return self._i2c
+        self._check_pin(sda, "sda")
+        self._check_pin(scl, "scl")
+        key = ('i2c', sda, scl)
+        if key not in self._i2c_buses:
+            self._claim(key, (sda, scl), ('sda', 'scl'))
+            gpio = self._load()
+            self._i2c_buses[key] = SoftwareI2CBus(gpio, sda, scl)
+            self._pin_modes[sda] = self._pin_modes[scl] = 'i2c'
+        return self._i2c_buses[key]
 
     def _load(self) -> ModuleType:
         if self._gpio is None:
@@ -93,12 +230,11 @@ class RaspberryPi:
             self._gpio.cleanup(sorted(self._pin_modes))
             self._pin_modes.clear()
 
-    @staticmethod
-    def _check_pin(pin: int, name: str) -> int:
+    def _check_pin(self, pin: int, name: str) -> int:
         if not isinstance(pin, int) or isinstance(pin, bool) or not 0 <= pin <= 27:
-            raise ValueError(f"{name} must be a BCM GPIO number from 2 to 27")
-        if pin in RESERVED_PINS:
-            raise ValueError(f"GPIO {pin} is used by {RESERVED_PINS[pin]}")
+            raise ValueError(f"{name} must be a BCM GPIO number from 4 to 27")
+        if pin in self._reserved:
+            raise ValueError(f"GPIO {pin} is used by {self._reserved[pin]}")
         return pin
 
     def _wait_until(self, deadline_ns: int) -> None:
@@ -109,6 +245,12 @@ class RaspberryPi:
         while self._clock_ns() < deadline_ns:
             pass
 
+    @staticmethod
+    def _describe(owner: tuple) -> str:
+        if owner[0] == 'i2c':
+            return f"an I2C bus (SDA=GPIO {owner[1]}, SCL=GPIO {owner[2]})"
+        return "another motor"
+
     def _claim(self, key: tuple, pins: tuple[int, ...], names: tuple[str, ...]) -> None:
         for pin, name in zip(pins, names):
             self._check_pin(pin, name)
@@ -117,7 +259,7 @@ class RaspberryPi:
         for pin in pins:
             owner = self._claims.get(pin)
             if owner is not None and owner != key:
-                raise ValueError(f"GPIO {pin} is already used by another motor")
+                raise ValueError(f"GPIO {pin} is already used by {self._describe(owner)}")
         for pin in pins:
             self._claims[pin] = key
 
@@ -241,7 +383,7 @@ class RaspberryPi:
         for pin in (step_pin, direction_pin):
             owner = self._claims.get(pin)
             if owner is not None and owner[0] != 'stepper':
-                raise ValueError(f"GPIO {pin} is already used by another motor")
+                raise ValueError(f"GPIO {pin} is already used by {self._describe(owner)}")
         self._step(step_pin, direction_pin, steps, direction, step_delay_us)
 
     def _step(

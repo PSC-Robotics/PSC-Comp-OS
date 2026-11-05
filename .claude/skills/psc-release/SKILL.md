@@ -92,8 +92,7 @@ that is wrong or unsafe.
 ## Afterwards
 
 - Tell the user the release URL, whether it's latest or a pre-release, and the checksum.
-- The repository is private, so only PSC-Robotics members can download it. Mention
-  this if the image is meant for students or other teams.
+- The repository is public, so anyone can download the image and read its history.
 - Update the docs if they need it: a version row on the PSC Robotics OS page, and
   the "latest version" on the Brain Board and Updating your Brain Board pages.
 - Delete the previous local image file once the new one is released (the user's

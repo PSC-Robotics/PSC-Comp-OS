@@ -1,15 +1,19 @@
 import atexit
 import json
 import types
+from pathlib import Path
 
 import pytest
 
 from sr.robot3 import BRAKE, COAST, pin_motors
 from sr.robot3.arduino import Arduino
-from sr.robot3.raspberry_pi import RaspberryPi
+from sr.robot3.raspberry_pi import RaspberryPi, reserved_pins
 from sr.robot3.utils import BoardIdentity
 
 from .conftest import MockSerialWrapper
+
+# The pins the robot uses with the status service's default settings.
+DEFAULT_RESERVED = reserved_pins(Path('/nonexistent/psc-status.toml'))
 
 
 class FakePWM:
@@ -71,7 +75,8 @@ class Clock:
 def pi(monkeypatch):
     monkeypatch.setattr("sr.robot3.raspberry_pi.time.sleep", lambda secs: None)
     gpio = FakeGPIO()
-    return RaspberryPi(gpio_loader=lambda: gpio, clock_ns=Clock()), gpio
+    pi = RaspberryPi(gpio_loader=lambda: gpio, clock_ns=Clock(), reserved=DEFAULT_RESERVED)
+    return pi, gpio
 
 
 @pytest.fixture
@@ -114,7 +119,7 @@ def test_pi_supports_several_dc_motors(pi) -> None:
 
 @pytest.mark.parametrize(
     ("pins", "message"),
-    [((23, 23), "different"), ((17, 24), "status LED"), ((14, 24), "serial port"),
+    [((23, 23), "different"), ((5, 24), "start button"), ((14, 24), "serial port"),
      ((23, 28), "BCM GPIO number")],
 )
 def test_pi_dc_motor_rejects_invalid_pins(pi, pins, message) -> None:
