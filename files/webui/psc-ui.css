@@ -16,7 +16,7 @@
 }
 .psc-banner p { margin: 0 0 10px; }
 .psc-banner .buttons { margin: 0; }
-@media (max-width: 768px) { .psc-banner { top: 12px; } }
+@media (max-width: 768px) { .psc-banner { top: 52px; } }
 
 /* Multi-camera grid in kit-ui's camera view */
 #psc-camera-grid { display: none; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); gap: 14px; }
@@ -146,7 +146,11 @@
 .zone-selector .zone:nth-child(n+3) { display: none; }
 
 /* Robot settings dialog and the battery reading in the toolbar */
-.psc-battery { gap: 0.25em; }
+.psc-battery {
+	position: fixed; top: 12px; right: 12px; z-index: 36; gap: 0.25em; cursor: pointer;
+	font-variant-numeric: tabular-nums; box-shadow: 0 2px 8px rgb(0 0 0 / 0.2);
+}
+.psc-battery[hidden] { display: none; }
 .psc-battery .material-symbols-outlined { font-size: 1.2em; }
 .psc-setting-row { display: flex; align-items: center; gap: 1em; }
 .psc-slider { flex: 1; min-width: 0; accent-color: var(--bulma-link); }

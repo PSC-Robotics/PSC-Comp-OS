@@ -1,0 +1,12 @@
+[Unit]
+Description=PSC Robotics Bluetooth settings for the hotspot's Wi-Fi band
+Before=bluetooth.service
+After=local-fs.target
+
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/python3 /usr/local/lib/psc-bluetooth-radio.py
+RemainAfterExit=yes
+
+[Install]
+WantedBy=bluetooth.service

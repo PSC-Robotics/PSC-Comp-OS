@@ -28,6 +28,7 @@ text = text.replace(old, '''            **_hotspot_band(),
 helper = '''
 
 PSC_ROBOT_SETTINGS = (Path("/boot/psc-robot.txt"), Path("/boot/firmware/psc-robot.txt"))
+# Keep in step with files/gamepad/psc-bluetooth-radio.py
 FIVE_GHZ_BOARDS = ("Pi 4", "Pi 400", "Pi 3 Model B Plus", "Pi 3 Model A Plus", "Compute Module 4", "Pi 5")
 
 

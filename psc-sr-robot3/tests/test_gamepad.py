@@ -1,4 +1,5 @@
 import errno
+import os
 import threading
 
 import pytest
@@ -112,8 +113,11 @@ class FakeIO(gp.DeviceIO):
 
 @pytest.fixture(autouse=True)
 def no_stat(monkeypatch):
-    stat = type("Stat", (), {"st_rdev": 1, "st_ctime": 0})
-    monkeypatch.setattr(gp.os, "stat", lambda path: stat())
+    stat = type("Stat", (), {"st_rdev": 1, "st_ctime": 0, "st_ctime_ns": 0})
+    real_stat = os.stat
+    # Only the gamepad scan's stat of a device path is faked; pytest needs the real one.
+    monkeypatch.setattr(gp.os, "stat", lambda path, **kwargs: stat() if str(path).startswith("/dev/input")
+                        else real_stat(path, **kwargs))
 
 
 def manager_with(devices):
@@ -285,3 +289,42 @@ def test_unreadable_devices_are_skipped() -> None:
 def test_wait_until_connected_times_out() -> None:
     manager, _ = manager_with({})
     assert manager.gamepads[0].wait_until_connected(timeout=0.05) is False
+
+
+def test_a_quick_tap_read_in_one_go_counts() -> None:
+    manager, io = manager_with({"/dev/input/event0": XBOX_BLE})
+    pad = manager.gamepads[0]
+    io.send("/dev/input/event0", (gp.EV_KEY, 304, 1), (gp.EV_KEY, 304, 0))
+    poll(manager)
+    assert not pad.a
+    assert pad.was_pressed("a")
+
+
+def test_axes_at_their_minimum_on_connect_read_centred_until_they_move() -> None:
+    # Cheap USB pads report 0 on every axis until their first report: full left and up.
+    unreported = DeviceInfo(**{**SNES.__dict__, "axes": axes(x=(0, 255, 0), y=(0, 255, 0))})
+    manager, io = manager_with({"/dev/input/event0": unreported})
+    pad = manager.gamepads[0]
+    pad.deadzone = 0
+    assert (pad.left_x, pad.left_y) == (0, 0)
+    assert not pad.is_pressed("dpad_left") and not pad.is_pressed("dpad_up")
+    io.send("/dev/input/event0", (gp.EV_ABS, gp.ABS_X, 0))
+    poll(manager)
+    assert pad.left_x == pytest.approx(-1)
+    assert pad.left_y == 0
+
+
+def test_a_device_is_retried_once_udev_fixes_its_permissions(monkeypatch) -> None:
+    ctime = {"ns": 1_000_000_000}
+    stat = lambda: type("Stat", (), {"st_rdev": 1, "st_ctime": 1, "st_ctime_ns": ctime["ns"]})()
+    monkeypatch.setattr(gp.os, "stat", lambda path, **kwargs: stat())
+    io = FakeIO({"/dev/input/event0": XBOX_BLE})
+    io.denied.add("/dev/input/event0")
+    manager = GamepadManager(io)
+    manager._thread = threading.current_thread()
+    manager.poll(0)
+    assert not manager.gamepads[0].connected
+    io.denied.clear()
+    ctime["ns"] += 200_000_000  # chmod in the same second
+    poll(manager)
+    assert manager.gamepads[0].connected

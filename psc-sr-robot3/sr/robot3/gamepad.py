@@ -317,19 +317,29 @@ class _Device:
         self.layout = Layout(info)
         self.axes = {axis: data.value for axis, data in info.axes.items()}
         self.pressed = set(info.pressed)
+        # Some pads (cheap USB ones) report every axis as 0 until their first report,
+        # which on a 0-255 stick is full left and up: treat an axis that starts at its
+        # minimum as centred until it moves, so the robot doesn't drive on connect.
+        self.unmoved = {axis for axis, data in info.axes.items()
+                        if data.value == data.minimum and data.maximum > data.minimum}
+        # Buttons that went down since the last _count_presses, so a tap whose press
+        # and release arrive together still counts.
+        self.went_down: set[int] = set()
 
     def apply(self, events: Iterable[tuple[int, int, int]]) -> None:
         for event_type, code, value in events:
             if event_type == EV_KEY:
                 if value:
                     self.pressed.add(code)
+                    self.went_down.add(code)
                 else:
                     self.pressed.discard(code)
             elif event_type == EV_ABS:
                 self.axes[code] = value
+                self.unmoved.discard(code)
 
     def _stick(self, axis: Optional[int], deadzone: float, invert: bool = False) -> float:
-        if axis is None or axis not in self.info.axes:
+        if axis is None or axis not in self.info.axes or axis in self.unmoved:
             return 0.0
         data = self.info.axes[axis]
         span = data.maximum - data.minimum
@@ -582,6 +592,8 @@ class GamepadManager:
                         info = self._io.info(fd)
                         device.axes = {axis: data.value for axis, data in info.axes.items()}
                         device.pressed = set(info.pressed)
+                        device.unmoved = {axis for axis in device.unmoved
+                                          if device.axes.get(axis) == info.axes[axis].minimum}
                     except OSError:
                         self._remove(index)
                         continue
@@ -599,7 +611,9 @@ class GamepadManager:
                 continue
             try:
                 stat = os.stat(path)
-                identity = (stat.st_rdev, int(stat.st_ctime))
+                # ctime in ns: udev's permission change often lands in the same
+                # second the node appears, and must still retry the open
+                identity = (stat.st_rdev, stat.st_ctime_ns)
             except OSError:
                 identity = (0, 0)
             if self._ignored.get(path) == identity:
@@ -649,7 +663,14 @@ class GamepadManager:
         if device is None:
             return
         buttons = device.snapshot(0).buttons
-        for name, pressed in buttons.items():
+        peak = buttons
+        went_down, device.went_down = device.went_down, set()
+        if went_down - device.pressed:  # Pressed and released again in this batch
+            held = device.pressed
+            device.pressed = held | went_down
+            peak = device.snapshot(0).buttons
+            device.pressed = held
+        for name, pressed in peak.items():
             if pressed and not self._last_buttons[index][name]:
                 self._press_counts[index][name] += 1
         self._last_buttons[index] = buttons

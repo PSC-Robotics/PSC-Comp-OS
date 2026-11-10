@@ -7,9 +7,14 @@ set -eux -o pipefail
 install -o root -g root -m 755 /tmp/packer/gamepad/psc-gamepadd.py /usr/local/lib/psc-gamepadd.py
 install -o root -g root -m 644 /tmp/packer/gamepad/psc-gamepadd.service /usr/lib/systemd/system/psc-gamepadd.service
 systemctl enable bluetooth.service psc-gamepadd.service
+# Gentler Bluetooth settings when the hotspot is on 2.4GHz (see the script)
+install -o root -g root -m 755 /tmp/packer/gamepad/psc-bluetooth-radio.py /usr/local/lib/psc-bluetooth-radio.py
+install -o root -g root -m 644 /tmp/packer/gamepad/psc-bluetooth-radio.service /usr/lib/systemd/system/psc-bluetooth-radio.service
+systemctl enable psc-bluetooth-radio.service
 
 # BlueZ settings for game controllers:
-#  - FastConnectable: controllers reconnect quickly when turned on
+#  - FastConnectable: controllers reconnect quickly when turned on (switched off
+#    at boot by psc-bluetooth-radio when the hotspot is on 2.4GHz)
 #  - JustWorksRepairing: a controller that lost its pairing can pair again
 #    (PlayStation and Xbox controllers forget it when paired to another device)
 #  - ReconnectAttempts/Intervals: keep trying to reconnect after a dropout
@@ -48,3 +53,4 @@ chmod 644 /etc/modprobe.d/psc-bluetooth.conf
 
 grep -q "^JustWorksRepairing = always" /etc/bluetooth/main.conf
 grep -q "^ClassicBondedOnly = false" /etc/bluetooth/input.conf
+/usr/bin/python3 -m py_compile /usr/local/lib/psc-bluetooth-radio.py

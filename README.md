@@ -132,7 +132,7 @@ the saved levels return when it ends.
 
 The battery voltage is read from the HAT's ADS1115 (I2C 0x48, AIN0 through a
 100k/20k divider, so the reading x 6) every second, published on `psc/battery`
-(retained) and shown in the web UI's toolbar. Below `low_voltage` (10.5V) for 5
+(retained) and shown at the top right of the web UI. Below `low_voltage` (10.5V) for 5
 seconds, the buzzer beeps rapidly, every LED flashes red and robot code is stopped
 (an `astoria/astprocd/request/kill` request), at full volume and brightness, until
 it's back above `recover_voltage` (11V). Readings below 5V mean no battery is
@@ -173,6 +173,16 @@ have no screw terminals. `robot.brain.i2c_bus(sda=2, scl=3)` gets that bus.
 
 A power board is optional. `robot.power_board` raises an error if there isn't one,
 and nothing is logged otherwise.
+
+## Gamepads And Wi-Fi
+
+Wi-Fi and Bluetooth share one radio on a Raspberry Pi. With the hotspot on 2.4GHz
+(always on a Pi 3 Model B, or with `wifi_band = 2.4` in `psc-robot.txt`),
+`psc-bluetooth-radio` sets gentler Bluetooth settings before `bluetoothd` starts:
+FastConnectable off, a light background scan for paired Bluetooth LE controllers,
+and DualShock 4s reporting every 16ms instead of 4ms. A 5GHz hotspot keeps the
+faster settings. The web UI stops searching for controllers when its gamepad dialog
+is closed.
 
 ## Networking And USB
 

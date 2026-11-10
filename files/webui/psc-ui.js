@@ -772,16 +772,19 @@
 		["buzzer_volume", "volume_up", "Buzzer volume", "Status beeps and robot.buzzer."],
 		["led_brightness", "light_mode", "LED brightness", "The status LED and robot.brain.led."],
 	];
-	const batteryTag = el("span", { class: "tag is-medium psc-battery", hidden: true, title: "Battery voltage" });
+	// Top right of the page, clear of the toolbar, which is crowded on a phone. Opens the settings.
+	const batteryTag = el("span", {
+		class: "tag is-medium psc-battery", hidden: true, title: "Battery voltage", role: "button", tabindex: "0",
+		onclick: () => openSettings(),
+		onkeydown: event => { if (event.key === "Enter" || event.key === " ") { event.preventDefault(); openSettings(); } },
+	});
+	document.body.append(batteryTag);
 	const settingsButton = el("span", {
 		class: "button psc-cal-button", tabindex: "0", role: "button", title: "Robot settings",
 		"aria-label": "Robot settings", onclick: () => openSettings(),
 		onkeydown: event => { if (event.key === "Enter" || event.key === " ") { event.preventDefault(); openSettings(); } },
 	}, el("span", { class: "icon has-text-link" }, icon("tune")));
-	if (toolbar) {
-		toolbar.prepend(el("div", { class: "control" }, settingsButton));
-		toolbar.prepend(el("div", { class: "control psc-battery-control" }, batteryTag));
-	}
+	if (toolbar) toolbar.prepend(el("div", { class: "control" }, settingsButton));
 
 	const settingsBody = el("section", { class: "modal-card-body" });
 	const settingsModal = el("div", { class: "modal", id: "psc-settings", role: "dialog", "aria-modal": "true", "aria-labelledby": "psc-settings-title" },
@@ -912,7 +915,16 @@
 	);
 	document.body.append(pads.modal);
 	const padsOpen = () => pads.modal.classList.contains("is-active");
-	new MutationObserver(() => { if (!padsOpen()) { stopGamepadPolling(); renderBanner(); } })
+	new MutationObserver(() => {
+		if (padsOpen()) return;
+		stopGamepadPolling();
+		renderBanner();
+		// Searching takes radio time from Wi-Fi (it shares the Pi's radio): stop when closed.
+		if (pads.status?.bluetooth?.searching) {
+			pads.status.bluetooth.searching = false;
+			api("/gamepad-api/scan", { on: false }).catch(() => {});
+		}
+	})
 		.observe(pads.modal, { attributes: true, attributeFilter: ["class"] });
 
 	function openGamepads() {

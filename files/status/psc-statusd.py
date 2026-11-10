@@ -46,6 +46,7 @@ back above recover_voltage. The alarm ignores the volume and brightness settings
 from __future__ import annotations
 
 import atexit
+import ctypes
 import fcntl
 import json
 import math
@@ -396,6 +397,22 @@ def kill_request() -> str:
     return json.dumps({"uuid": str(uuid.uuid4()), "sender_name": "psc-statusd"})
 
 
+def tighten_timer_slack() -> None:
+    """
+    Make sleeps in this thread, and threads it starts, end on time (Linux only).
+
+    RPi.GPIO times its software PWM with nanosleep, which Linux lets overrun by up to
+    the thread's timer slack, 50 us by default. That stretches every short pulse to
+    about 100 us, so all the quieter volumes (short pulses) sounded the same. The PWM
+    thread takes its timer slack from the thread that starts it.
+    """
+    try:
+        libc = ctypes.CDLL(None, use_errno=True)
+        libc.prctl(29, 1, 0, 0, 0)  # PR_SET_TIMERSLACK, 1 ns
+    except (OSError, AttributeError):
+        pass
+
+
 class BuzzerPlayer:
     """
     Plays sounds on the buzzer in a background thread.
@@ -415,6 +432,7 @@ class BuzzerPlayer:
         gpio.setup(pin, gpio.OUT, initial=gpio.LOW)
         self._pwm = gpio.PWM(pin, 1000) if passive else None
         if self._pwm is not None:
+            tighten_timer_slack()  # before start(), which starts RPi.GPIO's PWM thread
             self._pwm.start(0)
         self._thread = threading.Thread(target=self._run, name="buzzer", daemon=True)
         self._thread.start()
