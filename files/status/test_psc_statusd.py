@@ -111,3 +111,104 @@ def test_is_competition_usb_uses_astorias_rule(tmp_path):
 def test_rapid_flash_turns_fully_on_and_off():
     assert statusd.COMP_USB.chain(0.05)[0] > 0
     assert statusd.COMP_USB.chain(0.15) == (0, 0, 0)
+
+
+# ---- web UI settings, battery alarm
+
+def test_scaled_duty_keeps_full_volume_and_silences_zero():
+    assert statusd.scaled_duty(50, 1.0) == 50
+    assert statusd.scaled_duty(15, 1.0) == 15
+    assert statusd.scaled_duty(50, 0) == 0
+    # Half volume halves the fundamental's amplitude: sin(pi * d) = 0.5 at 50%
+    assert statusd.scaled_duty(50, 0.5) == pytest.approx(100 / 6)
+
+
+def test_settings_save_and_reload(tmp_path):
+    path = tmp_path / "psc" / "settings.json"
+    settings = statusd.Settings(path)
+    assert settings.saved == statusd.DEFAULT_SETTINGS
+    assert settings.update(message(buzzer_volume=30)) == {"buzzer_volume": 30}
+    assert statusd.Settings(path).saved == {"buzzer_volume": 30, "led_brightness": 100}
+
+
+def test_settings_reject_invalid_values(tmp_path):
+    settings = statusd.Settings(tmp_path / "settings.json")
+    assert settings.update(message(buzzer_volume=101)) is None
+    assert settings.update(message(led_brightness=True)) is None
+    assert settings.update(b"not json") is None
+    assert settings.saved == statusd.DEFAULT_SETTINGS
+
+
+def test_settings_ignore_a_corrupt_file(tmp_path):
+    path = tmp_path / "settings.json"
+    path.write_text('{"buzzer_volume": "loud", "led_brightness": 40}')
+    assert statusd.Settings(path).saved == {"buzzer_volume": 100, "led_brightness": 40}
+
+
+def test_competition_mode_uses_the_defaults_and_keeps_the_saved_values(tmp_path):
+    settings = statusd.Settings(tmp_path / "settings.json")
+    settings.update(message(buzzer_volume=10, led_brightness=20))
+    assert settings.effective(locked=True) == statusd.DEFAULT_SETTINGS
+    assert settings.effective(locked=False) == {"buzzer_volume": 10, "led_brightness": 20}
+
+
+def test_battery_alarm_needs_a_sustained_low_reading():
+    alarm = statusd.BatteryAlarm(10.5, 11.0, 5)
+    assert not alarm.update(10.2, 0)
+    assert not alarm.update(10.8, 3)       # back up: the timer restarts
+    assert not alarm.update(10.2, 4)
+    assert not alarm.update(10.2, 8)
+    assert alarm.update(10.2, 9)
+    assert alarm.update(10.8, 20)          # above low but below recover: still low
+    assert alarm.update(11.2, 21)
+    assert not alarm.update(11.2, 26)
+
+
+def test_battery_alarm_ignores_no_battery():
+    alarm = statusd.BatteryAlarm(10.5, 11.0, 0)
+    assert not alarm.update(0.02, 0)
+    assert not alarm.update(None, 1)
+
+
+class FakeStrip:
+    pin = 18
+    count = 2
+
+    def __init__(self):
+        self.shown = None
+
+    def show(self, colours):
+        self.shown = colours
+
+
+def test_led_brightness_scales_status_and_user_leds():
+    strip = FakeStrip()
+    chain = statusd.LedChain([strip], True, 0.2, 1.0)
+    chain.set_user(json.dumps({"colours": [[200, 100, 0]]}).encode())
+    chain.set_status((255, 0, 0))
+    assert strip.shown == [(51, 0, 0), (200, 100, 0)]
+    chain.set_scale(0.25)
+    assert strip.shown == [(13, 0, 0), (50, 25, 0)]
+
+
+def test_low_battery_alarm_shows_on_every_led_whatever_the_brightness():
+    strip = FakeStrip()
+    chain = statusd.LedChain([strip], True, 0.2, 1.0)
+    chain.set_scale(0)
+    chain.set_alarm((255, 0, 0))
+    assert strip.shown == [(51, 0, 0), (51, 0, 0)]
+    chain.set_alarm(None)
+    assert strip.shown == [(0, 0, 0), (0, 0, 0)]
+
+
+def test_kill_request_matches_astoria():
+    request = json.loads(statusd.kill_request())
+    assert request["sender_name"] == "psc-statusd"
+    assert len(request["uuid"]) == 36
+
+
+def test_config_battery_defaults(tmp_path):
+    path = tmp_path / "psc-status.toml"
+    path.write_text("[start_button]\npin = 5\n")
+    battery = statusd.load_config(path)["battery"]
+    assert battery["low_voltage"] == 10.5 and battery["address"] == 0x48

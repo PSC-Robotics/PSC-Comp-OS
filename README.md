@@ -123,6 +123,21 @@ after power-on.
 `robot.py`, the same rule Astoria uses. It flashes yellow rapidly for 3 seconds when
 one is plugged in, and for as long as there's no code USB.
 
+The web UI's settings button (or `/#settings`) sets the buzzer volume and LED
+brightness, each 0 to 100% of the levels in `/etc/psc-status.toml`. `psc-statusd`
+applies them at once, saves them in `/var/lib/psc/settings.json` and publishes the
+levels in use on `psc/settings` (retained); the web UI sends changes to
+`psc/settings/set`. In competition mode both go back to 100% and are locked, and
+the saved levels return when it ends.
+
+The battery voltage is read from the HAT's ADS1115 (I2C 0x48, AIN0 through a
+100k/20k divider, so the reading x 6) every second, published on `psc/battery`
+(retained) and shown in the web UI's toolbar. Below `low_voltage` (10.5V) for 5
+seconds, the buzzer beeps rapidly, every LED flashes red and robot code is stopped
+(an `astoria/astprocd/request/kill` request), at full volume and brightness, until
+it's back above `recover_voltage` (11V). Readings below 5V mean no battery is
+connected. These are set under `[battery]` in `/etc/psc-status.toml`.
+
 `sr.robot3` reads `/etc/psc-status.toml` to decide which pins robot code can't
 use: the start button, the buzzer and the LEDs' data pin, plus 14/15 (serial,
 for bus servos), 2/3 (I2C) and 0/1 (HAT EEPROM). Wire the start button between GPIO 5 and

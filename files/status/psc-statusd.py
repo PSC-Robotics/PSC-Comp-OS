@@ -32,6 +32,16 @@ HAT is wired) and GPIO 10 (SPI MOSI) at once, so it works on either pin.
 
 Pins, LED polarity, the LED chain, buzzer type, volume and sounds are set in
 /etc/psc-status.toml.
+
+The web UI's settings scale the buzzer's volume and the LEDs' brightness, from 0 to
+100% of those values. They're saved in /var/lib/psc/settings.json and applied at
+once. A competition USB (competition mode) puts both back to 100% and locks them,
+until it's removed.
+
+The battery is read from an ADS1115 on the HAT (I2C 0x48, AIN0, through a divider)
+and shown in the web UI. If it stays below [battery] low_voltage, the buzzer beeps
+rapidly, every LED flashes red and robot code is stopped, until the battery is
+back above recover_voltage. The alarm ignores the volume and brightness settings.
 """
 from __future__ import annotations
 
@@ -46,6 +56,7 @@ import struct
 import threading
 import time
 import tomllib
+import uuid
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -58,7 +69,13 @@ START_BUTTON_TOPIC = "astoria/broadcast/start_button"
 BUZZER_TOPIC = "psc/buzzer"
 MOTORS_TOPIC = "psc/motors"
 LEDS_TOPIC = "psc/leds"
+SETTINGS_TOPIC = "psc/settings"          # the settings in use, retained, from this service
+SETTINGS_SET_TOPIC = "psc/settings/set"  # changes from the web UI
+BATTERY_TOPIC = "psc/battery"            # the battery voltage, retained
+KILL_TOPIC = "astoria/astprocd/request/kill"
 CODE_ACTIVE = ("code_starting", "code_running")
+SETTINGS_FILE = Path(os.environ.get("PSC_SETTINGS_FILE", "/var/lib/psc/settings.json"))
+DEFAULT_SETTINGS = {"buzzer_volume": 100, "led_brightness": 100}
 
 # How often the LEDs are updated, and how long a flash or pulse takes.
 TICK = 0.05
@@ -101,6 +118,7 @@ COMP_WAITING_FOR_START = LedPattern((140, 95, 0), "pulse")
 COMP_USB = LedPattern((255, 170, 0), "rapid")
 RUNNING = LedPattern((0, 255, 0))
 CRASHED = LedPattern((255, 0, 0), "flash")
+LOW_BATTERY = LedPattern((255, 0, 0), "rapid")  # on every LED in the chain
 
 # Sounds are lists of (frequency in Hz, seconds, volume); a frequency or volume of
 # 0 is silence. Volume is the PWM duty cycle in percent: 50 is a passive
@@ -113,6 +131,8 @@ DEFAULT_SOUNDS: dict[str, Sound] = {
 }
 DEFAULT_CODE_VOLUME = 50
 SILENCE: Sound = []
+# The low battery alarm: 1 second of fast beeps, played again until the battery recovers.
+LOW_BATTERY_SOUND: Sound = [(3000, 0.05, 50), (0, 0.05, 0)] * 10
 
 
 def is_competition_usb(path: str) -> bool:
@@ -233,6 +253,149 @@ def buzz_request(payload: bytes, volume: float = DEFAULT_CODE_VOLUME) -> Sound |
     return [(frequency, duration, volume)]
 
 
+def scaled_duty(duty: float, volume: float) -> float:
+    """
+    The PWM duty cycle (0 to 50) that plays a tone at a share (0 to 1) of the
+    loudness duty gives. A square wave's fundamental is proportional to
+    sin(pi * duty), so scaling the duty itself would barely change the loudness.
+    """
+    if volume >= 1:
+        return duty
+    if volume <= 0 or duty <= 0:
+        return 0.0
+    amplitude = volume * math.sin(math.pi * min(duty, 50) / 100)
+    return math.asin(amplitude) / math.pi * 100
+
+
+def level_to_share(level: int) -> float:
+    """
+    A web UI setting (0 to 100%) as a share of the brightness, squared, as the eye
+    sees an LED at a quarter of its power as about half as bright.
+    """
+    return (level / 100) ** 2
+
+
+class Settings:
+    """
+    The web UI's buzzer volume and LED brightness (each 0 to 100%), saved to a file.
+
+    In competition mode both are 100% (the levels in /etc/psc-status.toml) and can't
+    be changed; the saved values come back when it ends.
+    """
+
+    def __init__(self, path: Path = SETTINGS_FILE) -> None:
+        self._path = path
+        self.saved = dict(DEFAULT_SETTINGS)
+        try:
+            stored = json.loads(path.read_text())
+            for name in DEFAULT_SETTINGS:
+                value = stored.get(name) if isinstance(stored, dict) else None
+                if isinstance(value, int) and not isinstance(value, bool) and 0 <= value <= 100:
+                    self.saved[name] = value
+        except (OSError, ValueError):
+            pass
+
+    def effective(self, locked: bool) -> dict:
+        return dict(DEFAULT_SETTINGS) if locked else dict(self.saved)
+
+    def update(self, payload: bytes) -> dict | None:
+        """Apply a change from the web UI; return what changed, or None if it's invalid."""
+        try:
+            request = json.loads(payload)
+        except ValueError:
+            return None
+        if not isinstance(request, dict):
+            return None
+        changed = {}
+        for name in DEFAULT_SETTINGS:
+            value = request.get(name)
+            if value is None:
+                continue
+            if isinstance(value, bool) or not isinstance(value, (int, float)) or not 0 <= value <= 100:
+                return None
+            if round(value) != self.saved[name]:
+                changed[name] = round(value)
+        if changed:
+            self.saved.update(changed)
+            self._save()
+        return changed
+
+    def _save(self) -> None:
+        try:
+            self._path.parent.mkdir(parents=True, exist_ok=True)
+            temporary = self._path.with_suffix(".tmp")
+            temporary.write_text(json.dumps(self.saved) + "\n")
+            os.replace(temporary, self._path)
+        except OSError as error:
+            print(f"Failed to save the settings to {self._path}: {error}", flush=True)
+
+
+class Ads1115:
+    """The HAT's ADS1115, read in single-shot mode on AIN0 at +-4.096V."""
+
+    I2C_SLAVE = 0x0703
+    # Config register: start a conversion, AIN0 against GND, +-4.096V, single shot,
+    # 128 samples a second, comparator off.
+    CONFIG = bytes([0x01, 0xC3, 0x83])
+
+    def __init__(self, bus: int, address: int, scale: float) -> None:
+        self._scale = scale
+        self._fd = os.open(f"/dev/i2c-{bus}", os.O_RDWR)
+        try:
+            fcntl.ioctl(self._fd, self.I2C_SLAVE, address)
+            self.read()  # fails here if there's no ADS1115
+        except OSError:
+            os.close(self._fd)
+            raise
+
+    def read(self) -> float:
+        """The battery's voltage."""
+        os.write(self._fd, self.CONFIG)
+        time.sleep(0.01)  # one conversion takes about 8ms
+        os.write(self._fd, bytes([0x00]))
+        raw = struct.unpack(">h", os.read(self._fd, 2))[0]
+        return raw * 4.096 / 32768 * self._scale
+
+    def close(self) -> None:
+        os.close(self._fd)
+
+
+class BatteryAlarm:
+    """
+    Whether the battery is low: below low_voltage for low_seconds, so a moment's
+    sag under load doesn't trip it. It clears once the voltage is above
+    recover_voltage for as long. Readings below 5V mean no battery is connected
+    (the Pi powered another way), which isn't an alarm.
+    """
+
+    NO_BATTERY = 5.0
+
+    def __init__(self, low_voltage: float, recover_voltage: float, low_seconds: float) -> None:
+        self.low_voltage = low_voltage
+        self.recover_voltage = recover_voltage
+        self.low_seconds = low_seconds
+        self.low = False
+        self._since: float | None = None
+
+    def update(self, voltage: float | None, now: float) -> bool:
+        """Add a reading (None if unavailable); return whether the battery is low."""
+        if voltage is None or voltage < self.NO_BATTERY:
+            self.low, self._since = False, None
+            return self.low
+        crossing = voltage > self.recover_voltage if self.low else voltage < self.low_voltage
+        if not crossing:
+            self._since = None
+        elif self._since is None:
+            self._since = now
+        elif now - self._since >= self.low_seconds:
+            self.low, self._since = not self.low, None
+        return self.low
+
+
+def kill_request() -> str:
+    return json.dumps({"uuid": str(uuid.uuid4()), "sender_name": "psc-statusd"})
+
+
 class BuzzerPlayer:
     """
     Plays sounds on the buzzer in a background thread.
@@ -246,7 +409,9 @@ class BuzzerPlayer:
         self._gpio = gpio
         self._pin = pin
         self._passive = passive
-        self._requests: queue.Queue[Sound | None] = queue.Queue()
+        # The web UI's volume, from 0 to 1, as a share of each sound's loudness.
+        self.volume = 1.0
+        self._requests: queue.Queue[tuple[Sound, bool] | None] = queue.Queue()
         gpio.setup(pin, gpio.OUT, initial=gpio.LOW)
         self._pwm = gpio.PWM(pin, 1000) if passive else None
         if self._pwm is not None:
@@ -254,8 +419,9 @@ class BuzzerPlayer:
         self._thread = threading.Thread(target=self._run, name="buzzer", daemon=True)
         self._thread.start()
 
-    def play(self, sound: Sound) -> None:
-        self._requests.put(sound)
+    def play(self, sound: Sound, full_volume: bool = False) -> None:
+        """Play a sound, at the web UI's volume unless full_volume (for alarms)."""
+        self._requests.put((sound, full_volume))
 
     def close(self) -> None:
         self._requests.put(None)
@@ -279,24 +445,27 @@ class BuzzerPlayer:
             self._gpio.output(self._pin, self._gpio.HIGH)
 
     def _run(self) -> None:
-        sound: Sound | None = self._requests.get()
-        while sound is not None:
+        request = self._requests.get()
+        while request is not None:
+            sound, full_volume = request
             replaced = False
             for frequency, duration, volume in sound:
+                if not full_volume:
+                    volume = scaled_duty(volume, self.volume)
                 if frequency > 0 and volume > 0:
                     self._tone(frequency, volume)
                 else:
                     self._silence()
                 try:
                     # Wait out the note, unless a new sound replaces this one.
-                    sound = self._requests.get(timeout=duration)
+                    request = self._requests.get(timeout=duration)
                     replaced = True
                     break
                 except queue.Empty:
                     pass
             if not replaced:
                 self._silence()
-                sound = self._requests.get()
+                request = self._requests.get()
 
 
 class SpiLeds:
@@ -395,6 +564,9 @@ class LedChain:
     and robot code's colours on the rest. Writes the LEDs when something changes,
     and again on every status update (20 times a second, for smooth effects), so
     LEDs connected or glitched after a change still show the right colours.
+
+    The web UI's brightness scales both. An alarm colour, when set, shows on every
+    LED at the configured status brightness, whatever the web UI's brightness.
     """
 
     def __init__(self, strips: list, status_led: bool, status_brightness: float,
@@ -404,16 +576,29 @@ class LedChain:
         self._status_led = status_led
         self._status_brightness = status_brightness
         self._brightness = brightness
+        self._scale = 1.0
         self._lock = threading.Lock()
-        self._status = (0, 0, 0)
+        self._status = (0.0, 0.0, 0.0)
         self._user = [(0, 0, 0)] * (self.count - 1 if status_led else self.count)
+        self._alarm: tuple[float, float, float] | None = None
         self._shown: list[tuple[int, int, int]] | None = None
+
+    def set_scale(self, scale: float) -> None:
+        """Set the web UI's brightness, from 0 to 1."""
+        with self._lock:
+            self._scale = scale
+        self._show(refresh=True)
 
     def set_status(self, colour: tuple[float, float, float]) -> None:
         """Set the status LED to (red, green, blue), each from 0 to 255."""
         with self._lock:
-            self._status = tuple(  # type: ignore[assignment]
-                round(part * self._status_brightness) for part in colour)
+            self._status = colour
+        self._show(refresh=True)
+
+    def set_alarm(self, colour: tuple[float, float, float] | None) -> None:
+        """Show a colour on every LED (each part 0 to 255), or None to stop."""
+        with self._lock:
+            self._alarm = colour
         self._show(refresh=True)
 
     def set_user(self, payload: bytes) -> None:
@@ -427,7 +612,7 @@ class LedChain:
             return
         with self._lock:
             for i, colour in enumerate(colours[:len(self._user)]):
-                self._user[i] = tuple(round(part * self._brightness) for part in colour)
+                self._user[i] = colour
         self._show()
 
     def clear_user(self) -> None:
@@ -435,9 +620,19 @@ class LedChain:
             self._user = [(0, 0, 0)] * len(self._user)
         self._show()
 
+    def colours(self) -> list[tuple[int, int, int]]:
+        """The colours to send, first LED first. Call with the lock held."""
+        def dim(colour, level):
+            return tuple(round(part * level) for part in colour)
+
+        if self._alarm is not None:
+            return [dim(self._alarm, self._status_brightness)] * self.count
+        status = [dim(self._status, self._status_brightness * self._scale)] if self._status_led else []
+        return status + [dim(colour, self._brightness * self._scale) for colour in self._user]
+
     def _show(self, refresh: bool = False) -> None:
         with self._lock:
-            colours = ([self._status] if self._status_led else []) + self._user
+            colours = self.colours()
             if colours == self._shown and not refresh:
                 return
             self._shown = colours
@@ -518,6 +713,21 @@ def load_config(path: Path = CONFIG_FILE) -> dict:
         value = strip[name]
         if isinstance(value, bool) or not isinstance(value, (int, float)) or not 0 <= value <= 1:
             raise ValueError(f"led_strip.{name} must be from 0 to 1")
+    battery = config.setdefault("battery", {})
+    for name, default in (("enabled", True), ("bus", 1), ("address", 0x48), ("scale", 6.0),
+                          ("low_voltage", 10.5), ("recover_voltage", 11.0), ("low_seconds", 5.0)):
+        battery.setdefault(name, default)
+    if not isinstance(battery["enabled"], bool):
+        raise ValueError("battery.enabled must be true or false")
+    for name in ("bus", "address"):
+        if isinstance(battery[name], bool) or not isinstance(battery[name], int):
+            raise ValueError(f"battery.{name} must be a whole number")
+    for name in ("scale", "low_voltage", "recover_voltage", "low_seconds"):
+        value = battery[name]
+        if isinstance(value, bool) or not isinstance(value, (int, float)) or value < 0:
+            raise ValueError(f"battery.{name} must be a number, 0 or more")
+    if battery["recover_voltage"] < battery["low_voltage"]:
+        raise ValueError("battery.recover_voltage must be at least battery.low_voltage")
     sounds = buzzer.setdefault("sounds", {})
     for name in sounds:
         if name not in DEFAULT_SOUNDS:
@@ -591,6 +801,16 @@ def start_event() -> str:
     return json.dumps({"event_name": "start_button", "sender_name": "psc-statusd", "priority": 0})
 
 
+def open_battery(config: dict) -> Ads1115 | None:
+    battery = config["battery"]
+    if not battery["enabled"]:
+        return None
+    try:
+        return Ads1115(battery["bus"], battery["address"], battery["scale"])
+    except OSError:
+        return None
+
+
 def main() -> None:
     import paho.mqtt.client as mqtt
     import RPi.GPIO as GPIO
@@ -599,6 +819,10 @@ def main() -> None:
     button = config["start_button"]
     status = RobotStatus()
     status.sounds = config["buzzer"]["sounds"]
+    settings = Settings()
+    battery_config = config["battery"]
+    alarm = BatteryAlarm(battery_config["low_voltage"], battery_config["recover_voltage"],
+                         battery_config["low_seconds"])
     stop = threading.Event()
 
     GPIO.setwarnings(False)
@@ -613,6 +837,20 @@ def main() -> None:
 
     client = mqtt.Client(mqtt.CallbackAPIVersion.VERSION2, client_id="psc-statusd")
     client.reconnect_delay_set(min_delay=1, max_delay=5)
+    applied: dict = {}
+
+    def apply_settings() -> None:
+        """Use the settings for the current mode, and publish them for the web UI."""
+        locked = status.competition_mode
+        current = settings.effective(locked)
+        buzzer.volume = current["buzzer_volume"] / 100
+        if leds is not None:
+            leds.set_scale(level_to_share(current["led_brightness"]))
+        state = dict(current, locked=locked)
+        if state != applied.get("state") or not applied.get("published"):
+            applied["state"] = state
+            applied["published"] = status.connected
+            client.publish(SETTINGS_TOPIC, json.dumps(state), qos=1, retain=True)
 
     def on_connect(client, userdata, flags, reason_code, properties=None):
         if reason_code.is_failure:
@@ -620,7 +858,9 @@ def main() -> None:
         status.set_connected(True)
         client.subscribe([(ASTPROCD_TOPIC, 0), (ASTDISKD_TOPIC, 0), (ASTMETAD_TOPIC, 0),
                           (ROBOT_STATE_TOPIC, 0), (BUZZER_TOPIC, 0),
-                          (MOTORS_TOPIC, 0), (LEDS_TOPIC, 0)])
+                          (MOTORS_TOPIC, 0), (LEDS_TOPIC, 0), (SETTINGS_SET_TOPIC, 0)])
+        applied["published"] = False
+        apply_settings()
 
     def on_disconnect(client, userdata, flags, reason_code, properties=None):
         status.set_connected(False)
@@ -636,16 +876,27 @@ def main() -> None:
             if leds is not None and status.code_active:
                 leds.set_user(msg.payload)
             return
+        if msg.topic == SETTINGS_SET_TOPIC:
+            # Locked in competition mode: the competition USB's levels stay.
+            changed = None if status.competition_mode else settings.update(msg.payload)
+            apply_settings()
+            if changed and "buzzer_volume" in changed and not alarm.low:
+                buzzer.play(status.sounds["waiting"])  # so the new volume can be heard
+            return
         if msg.topic == BUZZER_TOPIC:
             sound = buzz_request(msg.payload, buzzer_config["code_volume"])
         else:
             was_active = status.code_active
+            was_comp = status.competition_mode
             sound = status.handle(msg.topic, msg.payload)
             if was_active and not status.code_active:
                 motors.stop()
                 if leds is not None:
                     leds.clear_user()
-        if sound is not None:
+            if status.competition_mode != was_comp:
+                apply_settings()
+        # The low battery alarm's beeping isn't interrupted by other sounds.
+        if sound is not None and not alarm.low:
             buzzer.play(sound)
 
     client.on_message = on_message
@@ -660,12 +911,68 @@ def main() -> None:
     edge = GPIO.FALLING if pull == GPIO.PUD_UP else GPIO.RISING
     GPIO.add_event_detect(button["pin"], edge, callback=on_button, bouncetime=200)
 
+    def watch_battery() -> None:
+        """Read the battery each second, publish it, and run the low battery alarm."""
+        monitor = None
+        next_open = next_publish = next_kill = next_beep = 0.0
+        last: dict = {}
+        while not stop.is_set():
+            now = time.monotonic()
+            if monitor is None and battery_config["enabled"] and now >= next_open:
+                monitor = open_battery(config)
+                next_open = now + 30  # look for it again later, if it isn't there
+                if monitor is not None:
+                    print("Battery monitor: ADS1115 found", flush=True)
+            voltage = None
+            if monitor is not None:
+                try:
+                    voltage = monitor.read()
+                except OSError as error:
+                    print(f"Battery monitor stopped responding: {error}", flush=True)
+                    monitor.close()
+                    monitor = None
+            was_low = alarm.low
+            low = alarm.update(voltage, now)
+            if low != was_low:
+                reading = "no reading" if voltage is None else f"{voltage:.2f}V"
+                print(f"Battery {'low' if low else 'recovered'}: {reading}", flush=True)
+                if leds is not None:
+                    leds.set_alarm(None)
+                if not low:
+                    buzzer.play(SILENCE, full_volume=True)
+            if low:
+                if leds is not None:
+                    leds.set_alarm(LOW_BATTERY.chain(now))
+                if now >= next_beep:
+                    buzzer.play(LOW_BATTERY_SOUND, full_volume=True)
+                    next_beep = now + sum(step[1] for step in LOW_BATTERY_SOUND)
+                if status.code_active and status.connected and now >= next_kill:
+                    client.publish(KILL_TOPIC, kill_request(), qos=1)
+                    print("Battery low: stopping robot code", flush=True)
+                    next_kill = now + 3
+            state = {"voltage": None if voltage is None else round(voltage, 2), "low": low,
+                     "low_voltage": battery_config["low_voltage"]}
+            moved = (voltage is not None and last.get("voltage") is not None
+                     and abs(voltage - last["voltage"]) >= 0.05)
+            if status.connected and (state["low"] != last.get("low") or moved
+                                     or (state["voltage"] is None) != (last.get("voltage") is None)
+                                     or now >= next_publish):
+                client.publish(BATTERY_TOPIC, json.dumps(state), qos=0, retain=True)
+                last = state
+                next_publish = now + 10
+            stop.wait(1.0 if not low else TICK)
+        if monitor is not None:
+            monitor.close()
+
     signal.signal(signal.SIGTERM, lambda *_: stop.set())
     signal.signal(signal.SIGINT, lambda *_: stop.set())
 
+    apply_settings()  # the saved levels from the start, before MQTT connects
     client.connect_async(config.get("mqtt", {}).get("host", "localhost"),
                          config.get("mqtt", {}).get("port", 1883))
     client.loop_start()
+    battery_thread = threading.Thread(target=watch_battery, name="battery", daemon=True)
+    battery_thread.start()
 
     print(f"psc-statusd: start button = BCM {button['pin']}, "
           f"buzzer = BCM {buzzer_config.get('pin', 13)} ({buzzer_config.get('type', 'passive')})", flush=True)
@@ -675,6 +982,7 @@ def main() -> None:
                 leds.set_status(status.pattern().chain(time.monotonic()))
             stop.wait(TICK)
     finally:
+        battery_thread.join(timeout=2)
         client.loop_stop()
         buzzer.close()
         if leds is not None:

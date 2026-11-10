@@ -44,6 +44,21 @@ crash = [
     [2093, 0.06, 15], [0, 0.06, 0], [2093, 0.06, 15], [0, 0.06, 0],
 ]
 
+# The battery monitor: an ADS1115 on the HAT (I2C bus 1, address 0x48) reading the
+# 12V rail on AIN0 through a 100k/20k divider. Its voltage shows in the web UI.
+# Below low_voltage for low_seconds, the buzzer beeps rapidly, every LED flashes
+# red and robot code is stopped, until it's above recover_voltage for as long.
+# Readings below 5V mean no battery (the Pi powered another way): no alarm.
+# Restart psc-statusd after editing.
+[battery]
+enabled = true
+bus = 1
+address = 0x48
+scale = 6.0             # battery voltage = the ADS1115's reading x scale
+low_voltage = 10.5      # 3.5V a cell on a 3S (12V) LiPo
+recover_voltage = 11.0
+low_seconds = 5.0
+
 [mqtt]
 host = "localhost"
 port = 1883

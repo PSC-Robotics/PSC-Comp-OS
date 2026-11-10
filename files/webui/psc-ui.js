@@ -3,6 +3,7 @@
 //  - a banner when a connected camera isn't calibrated
 //  - the latest image from every robot camera in kit-ui's camera view
 //  - pairing Bluetooth gamepads, and testing connected gamepads (toolbar button, or /#gamepads)
+//  - buzzer volume, LED brightness and the battery voltage (toolbar button, or /#settings)
 (() => {
 	"use strict";
 
@@ -676,6 +677,8 @@
 	function onMessage(topic, text) {
 		let message;
 		try { message = JSON.parse(text); } catch { return; }
+		if (topic === "psc/settings") { robotSettings.state = message; renderSettings(); return; }
+		if (topic === "psc/battery") { robotSettings.battery = message; renderBattery(); return; }
 		if (topic === "astoria/astprocd") {
 			if (message.code_status === "code_starting") clearCameras();
 			setCodeRunning(["code_starting", "code_running"].includes(message.code_status));
@@ -735,7 +738,8 @@
 		socket.onopen = () => {
 			const clientId = `psc-ui-${Math.random().toString(16).slice(2, 10)}`;
 			socket.send(packet(0x10, [...mqttString("MQTT"), 4, 0x02, 0, 60, ...mqttString(clientId)]));
-			socket.send(packet(0x82, [0, 1, ...mqttString("camera/annotated"), 0, ...mqttString("astoria/astprocd"), 0]));
+			socket.send(packet(0x82, [0, 1, ...mqttString("camera/annotated"), 0, ...mqttString("astoria/astprocd"), 0,
+				...mqttString("psc/settings"), 0, ...mqttString("psc/battery"), 0]));
 			pingTimer = setInterval(() => socket.readyState === WebSocket.OPEN && socket.send(new Uint8Array([0xc0, 0])), 30000);
 		};
 		socket.onmessage = event => {
@@ -751,6 +755,120 @@
 			buffer = new Uint8Array(0);
 			setTimeout(connect, 3000);
 		};
+	}
+
+	/** Publish a message (QoS 0); false if the robot isn't connected. */
+	function publish(topic, text) {
+		if (!socket || socket.readyState !== WebSocket.OPEN) return false;
+		socket.send(packet(0x30, [...mqttString(topic).slice(0), ...encoder.encode(text)]));
+		return true;
+	}
+
+	// ---------------------------------------------------------------- settings dialog + battery
+	// psc-statusd owns the settings: it applies them, saves them, and publishes the levels in
+	// use (retained) on psc/settings. Changes go to psc/settings/set. A competition USB locks them.
+	const robotSettings = { state: null, battery: null };
+	const SLIDERS = [
+		["buzzer_volume", "volume_up", "Buzzer volume", "Status beeps and robot.buzzer."],
+		["led_brightness", "light_mode", "LED brightness", "The status LED and robot.brain.led."],
+	];
+	const batteryTag = el("span", { class: "tag is-medium psc-battery", hidden: true, title: "Battery voltage" });
+	const settingsButton = el("span", {
+		class: "button psc-cal-button", tabindex: "0", role: "button", title: "Robot settings",
+		"aria-label": "Robot settings", onclick: () => openSettings(),
+		onkeydown: event => { if (event.key === "Enter" || event.key === " ") { event.preventDefault(); openSettings(); } },
+	}, el("span", { class: "icon has-text-link" }, icon("tune")));
+	if (toolbar) {
+		toolbar.prepend(el("div", { class: "control" }, settingsButton));
+		toolbar.prepend(el("div", { class: "control psc-battery-control" }, batteryTag));
+	}
+
+	const settingsBody = el("section", { class: "modal-card-body" });
+	const settingsModal = el("div", { class: "modal", id: "psc-settings", role: "dialog", "aria-modal": "true", "aria-labelledby": "psc-settings-title" },
+		el("div", { class: "modal-background", onclick: () => closeSettings() }),
+		el("div", { class: "modal-card" },
+			el("header", { class: "modal-card-head" },
+				el("p", { class: "modal-card-title", id: "psc-settings-title" }, icon("tune"), "Robot settings"),
+				el("button", { class: "delete", "aria-label": "Close", onclick: () => closeSettings() }),
+			),
+			settingsBody,
+			el("footer", { class: "modal-card-foot" }, el("button", { class: "button", onclick: () => closeSettings() }, "Close")),
+		),
+	);
+	document.body.append(settingsModal);
+	const settingsOpen = () => settingsModal.classList.contains("is-active");
+	// Sliders being dragged keep their position until released, so an update can't move them.
+	const dragging = new Set();
+
+	function openSettings() {
+		settingsModal.classList.add("is-active");
+		renderSettings(true);
+	}
+
+	function closeSettings() {
+		settingsModal.classList.remove("is-active");
+		if (location.hash === "#settings") history.replaceState(null, "", location.pathname);
+	}
+
+	function batteryText() {
+		const battery = robotSettings.battery;
+		if (!battery || battery.voltage == null) return null;
+		return `${battery.voltage.toFixed(1)} V`;
+	}
+
+	function renderBattery() {
+		const text = batteryText();
+		const low = !!robotSettings.battery?.low;
+		batteryTag.hidden = text === null;
+		batteryTag.className = `tag is-medium psc-battery ${low ? "is-danger" : "is-light"}`;
+		batteryTag.replaceChildren(icon(low ? "battery_alert" : "battery_full"), text || "");
+		if (settingsOpen()) renderSettings();
+	}
+
+	function renderSettings(force = false) {
+		if (!settingsOpen()) return;
+		if (!force && dragging.size) return;
+		const state = robotSettings.state;
+		const battery = robotSettings.battery;
+		const parts = [];
+		if (battery?.low) {
+			parts.push(el("div", { class: "notification is-danger" },
+				el("strong", {}, "The battery is low."),
+				` It's below ${battery.low_voltage} V, so robot code has been stopped. Charge or change the battery.`));
+		}
+		parts.push(el("p", { class: "mb-4" }, el("strong", {}, "Battery: "),
+			batteryText() || "No battery monitor found on the HAT."));
+		if (!state) {
+			parts.push(el("p", { class: "psc-muted" }, "Waiting for the robot's status service (psc-statusd)."));
+			settingsBody.replaceChildren(...parts);
+			return;
+		}
+		if (state.locked) {
+			parts.push(el("div", { class: "notification is-warning is-light" },
+				"A competition USB is plugged in, so these are at their competition levels and can't be changed. ",
+				"Your settings come back when it's removed."));
+		}
+		for (const [name, symbol, label, help] of SLIDERS) {
+			const output = el("output", { class: "psc-setting-value" }, `${state[name]}%`);
+			const slider = el("input", {
+				type: "range", min: "0", max: "100", step: "5", value: String(state[name]), class: "psc-slider",
+				disabled: state.locked, "aria-label": label,
+				oninput: event => { dragging.add(name); output.textContent = `${event.target.value}%`; },
+				onchange: event => {
+					dragging.delete(name);
+					const value = Number(event.target.value);
+					if (!publish("psc/settings/set", JSON.stringify({ [name]: value }))) {
+						output.textContent = "Not connected to the robot";
+					}
+				},
+			});
+			parts.push(el("div", { class: "field" },
+				el("label", { class: "label" }, icon(symbol), ` ${label}`),
+				el("div", { class: "psc-setting-row" }, slider, output),
+				el("p", { class: "help" }, help)));
+		}
+		parts.push(el("p", { class: "psc-muted" }, "Settings are saved on the robot. The low battery alarm always plays at full volume and brightness."));
+		settingsBody.replaceChildren(...parts);
 	}
 
 	// ---------------------------------------------------------------- gamepads dialog
@@ -992,6 +1110,7 @@
 	document.addEventListener("visibilitychange", () => refreshSummary());
 	if (location.hash === "#calibrate") openCalibration();
 	if (location.hash === "#gamepads") openGamepads();
+	if (location.hash === "#settings") openSettings();
 	refreshGamepads();
 	setInterval(() => { if (!padsOpen() && !document.hidden) refreshGamepads(); }, 10000);
 })();
