@@ -1,3 +1,4 @@
+import sys
 from types import SimpleNamespace
 
 import pytest
@@ -111,6 +112,7 @@ def test_camera_ids_without_serial_or_port_stay_unique(monkeypatch) -> None:
     assert camera.assign_camera_ids([_cam(0), _cam(1)]) == ["Webcam - 0", "Webcam - 1"]
 
 
+@pytest.mark.skipif(sys.platform == "win32", reason="fakes Linux's /sys with POSIX paths")
 def test_usb_port_from_sysfs(tmp_path, monkeypatch) -> None:
     interface = tmp_path / "devices" / "usb1" / "1-1" / "1-1.3" / "1-1.3:1.0"
     interface.mkdir(parents=True)
