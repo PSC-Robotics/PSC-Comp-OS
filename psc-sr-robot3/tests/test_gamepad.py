@@ -116,8 +116,11 @@ def no_stat(monkeypatch):
     stat = type("Stat", (), {"st_rdev": 1, "st_ctime": 0, "st_ctime_ns": 0})
     real_stat = os.stat
     # Only the gamepad scan's stat of a device path is faked; pytest needs the real one.
-    monkeypatch.setattr(gp.os, "stat", lambda path, **kwargs: stat() if str(path).startswith("/dev/input")
-                        else real_stat(path, **kwargs))
+
+    def fake_stat(path, **kwargs):
+        return stat() if str(path).startswith("/dev/input") else real_stat(path, **kwargs)
+
+    monkeypatch.setattr(gp.os, "stat", fake_stat)
 
 
 def manager_with(devices):
@@ -316,8 +319,11 @@ def test_axes_at_their_minimum_on_connect_read_centred_until_they_move() -> None
 
 def test_a_device_is_retried_once_udev_fixes_its_permissions(monkeypatch) -> None:
     ctime = {"ns": 1_000_000_000}
-    stat = lambda: type("Stat", (), {"st_rdev": 1, "st_ctime": 1, "st_ctime_ns": ctime["ns"]})()
-    monkeypatch.setattr(gp.os, "stat", lambda path, **kwargs: stat())
+
+    def fake_stat(path, **kwargs):
+        return type("Stat", (), {"st_rdev": 1, "st_ctime": 1, "st_ctime_ns": ctime["ns"]})()
+
+    monkeypatch.setattr(gp.os, "stat", fake_stat)
     io = FakeIO({"/dev/input/event0": XBOX_BLE})
     io.denied.add("/dev/input/event0")
     manager = GamepadManager(io)

@@ -772,14 +772,12 @@
 		["buzzer_volume", "volume_up", "Buzzer volume", "Status beeps and robot.buzzer."],
 		["led_brightness", "light_mode", "LED brightness", "The status LED and robot.brain.led."],
 	];
-	// A toolbar button that opens the settings. On a phone, where the toolbar is at the bottom
-	// and full, CSS moves it to the top right of the page.
+	// The voltage in the bar, just left of the toolbar's buttons (not one of them). Opens the settings.
 	const batteryTag = el("span", {
-		class: "button psc-battery", title: "Battery voltage", role: "button", tabindex: "0",
+		class: "psc-battery", title: "Battery voltage", role: "button", tabindex: "0", hidden: true,
 		onclick: () => openSettings(),
 		onkeydown: event => { if (event.key === "Enter" || event.key === " ") { event.preventDefault(); openSettings(); } },
 	});
-	const batteryControl = el("div", { class: "control psc-battery-control", hidden: true }, batteryTag);
 	const settingsButton = el("span", {
 		class: "button psc-cal-button", tabindex: "0", role: "button", title: "Robot settings",
 		"aria-label": "Robot settings", onclick: () => openSettings(),
@@ -787,7 +785,10 @@
 	}, el("span", { class: "icon has-text-link" }, icon("tune")));
 	if (toolbar) {
 		toolbar.prepend(el("div", { class: "control" }, settingsButton));
-		toolbar.prepend(batteryControl);
+		// The reading and the button group as one item, so the bar's spacing doesn't change
+		const end = el("div", { class: "psc-toolbar-end" });
+		toolbar.before(end);
+		end.append(batteryTag, toolbar);
 	}
 
 	const settingsBody = el("section", { class: "modal-card-body" });
@@ -823,14 +824,19 @@
 		return `${battery.voltage.toFixed(1)} V`;
 	}
 
+	let batteryShown = null;
 	function renderBattery() {
 		const text = batteryText();
 		const low = !!robotSettings.battery?.low;
-		batteryControl.hidden = text === null;
-		batteryTag.className = `button psc-battery${low ? " is-danger" : ""}`;
-		batteryTag.replaceChildren(
-			el("span", { class: `icon${low ? "" : " has-text-link"}` }, icon(low ? "battery_alert" : "battery_full")),
-			el("span", {}, text || ""));
+		// A reading arrives every second: only redraw when what's shown changes, as
+		// redrawing the settings dialog would move keyboard focus off its sliders.
+		const shown = JSON.stringify([text, low, !!robotSettings.battery?.alarm_bypassed]);
+		if (shown === batteryShown) return;
+		batteryShown = shown;
+		batteryTag.hidden = text === null;
+		batteryTag.classList.toggle("is-low", low);
+		batteryTag.title = low ? "Battery low" : "Battery voltage";
+		batteryTag.replaceChildren(icon(low ? "battery_alert" : "battery_full"), text || "");
 		if (settingsOpen()) renderSettings();
 	}
 

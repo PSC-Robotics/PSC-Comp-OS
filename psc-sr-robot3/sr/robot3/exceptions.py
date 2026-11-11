@@ -49,3 +49,7 @@ class IncorrectBoardError(IOError):
 
     def __str__(self) -> str:
         return f"Board returned type {self.returned_type!r}, expected {self.expected_type!r}"
+
+
+class BatteryMonitorError(RuntimeError):
+    """Raised when the battery voltage can't be read."""

@@ -135,12 +135,15 @@ the saved levels return when it ends.
 
 The battery voltage is read from the HAT's ADS1115 (I2C 0x48, AIN0 through a
 100k/20k divider, so the reading x 6) every second, published on `psc/battery`
-(retained) and shown in the web UI's toolbar (at the top right on a phone). Below `low_voltage` (10.5V) for 5
+(retained) and shown in the web UI's toolbar. Below `low_voltage` (10.5V) for 5
 seconds, the buzzer beeps rapidly, every LED flashes red and robot code is stopped
 (an `astoria/astprocd/request/kill` request), at full volume and brightness, until
 it's back above `recover_voltage` (11V). Readings below `no_battery_voltage` (6V)
 mean no battery is connected, so no alarm. These are set under `[battery]` in
-`/etc/psc-status.toml`. A competition USB whose `astoria.json` has
+`/etc/psc-status.toml`. Robot code reads the voltage with
+`robot.brain.battery_sensor.voltage`, from those messages: `psc-statusd` owns the
+ADS1115, and each reading carries the time and boot ID, so the library rejects one
+left retained by a stopped `psc-statusd` or an earlier boot. A competition USB whose `astoria.json` has
 `"battery_alarm_enabled": false` turns the alarm off while it's plugged in; the
 voltage still shows.
 

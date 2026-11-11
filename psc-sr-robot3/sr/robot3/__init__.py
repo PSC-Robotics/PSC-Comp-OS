@@ -1,7 +1,8 @@
 from .arduino import AnalogPins, GPIOPinMode
 from .astoria import RobotMode
 from .exceptions import (
-    BoardDisconnectionError, I2CError, MetadataKeyError, MetadataNotReadyError,
+    BatteryMonitorError, BoardDisconnectionError, I2CError, MetadataKeyError,
+    MetadataNotReadyError,
 )
 from .kch import Colour
 from .logging import add_trace_level
@@ -45,6 +46,7 @@ __all__ = [
     "A4",
     "A5",
     "BRAKE",
+    "BatteryMonitorError",
     "BoardDisconnectionError",
     "COAST",
     "COMP",

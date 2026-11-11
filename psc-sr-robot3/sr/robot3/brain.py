@@ -12,6 +12,7 @@ from typing import Callable, Optional
 from .i2c import (
     DEFAULT_SERVO_DRIVER_ADDRESS, SERVO_DRIVER_USER, I2CBus, ServoDriver, SoftwareI2CBus,
 )
+from .battery import BrainBatterySensor
 from .leds import STATUS_CONFIG, BrainLED
 from .logging import log_to_debug
 from .pin_motors import DCMotor, Stepper, register_driven_pins
@@ -97,13 +98,14 @@ class Brain:
     :param gpio_loader: Returns the RPi.GPIO module; replaced in tests.
     :param clock_ns: A monotonic clock in nanoseconds; replaced in tests.
     :param led: The LED your code controls.
+    :param battery_sensor: The HAT's battery sensor.
     :param reserved: Pins robot code can't use, and what uses each; read from the
         status service's config if not given.
     :param i2c: The I2C bus; replaced in tests.
     """
     __slots__ = (
         '_gpio', '_gpio_loader', '_clock_ns', '_pin_modes', '_pwms', '_motors', '_claims',
-        '_led', '_reserved', '_i2c', '_i2c_buses', '_servo_drivers',
+        '_led', '_battery_sensor', '_reserved', '_i2c', '_i2c_buses', '_servo_drivers',
     )
 
     def __init__(
@@ -111,10 +113,13 @@ class Brain:
         gpio_loader: Callable[[], ModuleType] = _load_gpio,
         clock_ns: Callable[[], int] = time.perf_counter_ns,
         led: Optional[BrainLED] = None,
+        battery_sensor: Optional[BrainBatterySensor] = None,
         reserved: Optional[dict[int, str]] = None,
         i2c: Optional[I2CBus] = None,
     ) -> None:
         self._led = BrainLED(None) if led is None else led
+        self._battery_sensor = (
+            BrainBatterySensor(None) if battery_sensor is None else battery_sensor)
         self._i2c = I2CBus() if i2c is None else i2c
         self._i2c_buses: dict[tuple, SoftwareI2CBus] = {}
         self._servo_drivers: dict[tuple[I2CBus, int], ServoDriver] = {}
@@ -135,6 +140,14 @@ class Brain:
         ``robot.brain.led.colour = Colour.RED``.
         """
         return self._led
+
+    @property
+    def battery_sensor(self) -> BrainBatterySensor:
+        """
+        The HAT's battery sensor. Read the voltage with
+        ``robot.brain.battery_sensor.voltage``.
+        """
+        return self._battery_sensor
 
     @log_to_debug
     def servo_driver(

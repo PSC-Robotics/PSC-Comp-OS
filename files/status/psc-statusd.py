@@ -421,6 +421,29 @@ class BatteryAlarm:
         return self.low
 
 
+def boot_id() -> str:
+    """This boot's ID, so readers can tell a reading from an earlier boot."""
+    try:
+        return Path("/proc/sys/kernel/random/boot_id").read_text().strip()
+    except OSError:
+        return ""
+
+
+BOOT_ID = boot_id()
+
+
+def battery_state(voltage: float | None, low: bool, low_voltage: float, bypassed: bool,
+                  now: float) -> dict:
+    """
+    The psc/battery message. "time" is this boot's monotonic clock (the same for every
+    process), with "boot_id", so a reader can tell a reading is current: one left
+    retained by a stopped psc-statusd, or from an earlier boot, is out of date.
+    """
+    return {"voltage": None if voltage is None else round(voltage, 3), "low": low,
+            "low_voltage": low_voltage, "alarm_bypassed": bypassed,
+            "time": round(now, 3), "boot_id": BOOT_ID}
+
+
 def kill_request() -> str:
     return json.dumps({"uuid": str(uuid.uuid4()), "sender_name": "psc-statusd"})
 
@@ -1006,17 +1029,14 @@ def main() -> None:
                     client.publish(KILL_TOPIC, kill_request(), qos=1)
                     print("Battery low: stopping robot code", flush=True)
                     next_kill = now + 3
-            state = {"voltage": None if voltage is None else round(voltage, 2), "low": low,
-                     "low_voltage": battery_config["low_voltage"], "alarm_bypassed": bypassed}
-            moved = (voltage is not None and last.get("voltage") is not None
-                     and abs(voltage - last["voltage"]) >= 0.05)
-            if status.connected and (state["low"] != last.get("low") or moved
-                                     or bypassed != last.get("alarm_bypassed")
-                                     or (state["voltage"] is None) != (last.get("voltage") is None)
-                                     or now >= next_publish):
+            state = battery_state(voltage, low, battery_config["low_voltage"], bypassed, now)
+            changed = any(state[key] != last.get(key) for key in ("low", "alarm_bypassed"))
+            # Each reading (once a second), so robot code and the web UI are never more than
+            # a second behind, and sooner when the alarm changes.
+            if status.connected and (changed or now >= next_publish):
                 client.publish(BATTERY_TOPIC, json.dumps(state), qos=0, retain=True)
                 last = state
-                next_publish = now + 10
+                next_publish = now + 1
             stop.wait(1.0 if not low else TICK)
         if monitor is not None:
             monitor.close()

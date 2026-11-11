@@ -193,6 +193,9 @@ def test_wait_start_announces_state(monkeypatch) -> None:
         def wrapped_publish(self, topic, payload, retain=False, **kwargs):
             published.append((topic, payload))
 
+        def subscribe(self, topic, callback, abs_path=False):  # the battery sensor
+            pass
+
     class FakeAstoria:
         presses = iter([False, False, True])
 

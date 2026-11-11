@@ -21,6 +21,7 @@ from .camera import AprilCamera, _setup_cameras
 from .exceptions import MetadataNotReadyError
 from .gamepad import Gamepad, GamepadManager
 from .kch import KCH
+from .battery import BrainBatterySensor
 from .leds import BrainLED
 from .logging import log_to_debug, setup_logging
 from .motor_board import MotorBoard
@@ -161,7 +162,8 @@ class Robot(metaclass=FinalMeta):
 
         self._kch = KCH()
         self._buzzer = Buzzer(self._mqtt, self.sleep)
-        self._brain = Brain(led=BrainLED(self._mqtt))
+        self._brain = Brain(
+            led=BrainLED(self._mqtt), battery_sensor=BrainBatterySensor(self._mqtt))
         self._gamepads = GamepadManager()
         self._motor_boards = MotorBoard._get_supported_boards(manual_motorboards)
         self._servo_boards = ServoBoard._get_supported_boards(manual_servoboards)
