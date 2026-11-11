@@ -42,6 +42,8 @@ The battery is read from an ADS1115 on the HAT (I2C 0x48, AIN0, through a divide
 and shown in the web UI. If it stays below [battery] low_voltage, the buzzer beeps
 rapidly, every LED flashes red and robot code is stopped, until the battery is
 back above recover_voltage. The alarm ignores the volume and brightness settings.
+Below no_battery_voltage (6V) there's no battery, so no alarm. A competition USB
+whose astoria.json has "battery_alarm_enabled": false turns the alarm off.
 """
 from __future__ import annotations
 
@@ -54,6 +56,8 @@ import os
 import queue
 import signal
 import struct
+import subprocess
+import sys
 import threading
 import time
 import tomllib
@@ -148,12 +152,31 @@ def is_competition_usb(path: str) -> bool:
         return False
 
 
+def competition_usb_flag(path: str, key: str) -> bool:
+    """
+    A true/false setting in a competition USB's astoria.json, such as
+    "battery_alarm_enabled": false. Missing or unreadable means true (enabled).
+    """
+    try:
+        data = json.loads((Path(path) / "astoria.json").read_text())
+    except (OSError, ValueError):
+        return True
+    value = data.get(key, True) if isinstance(data, dict) else True
+    if isinstance(value, str):
+        return value.strip().lower() not in ("false", "0", "no", "off")
+    return value is not False and value != 0
+
+
 class RobotStatus:
     """Track Astoria's code status and the robot's start state."""
 
-    def __init__(self, is_comp_usb=is_competition_usb) -> None:
+    def __init__(self, is_comp_usb=is_competition_usb, comp_usb_flag=competition_usb_flag) -> None:
         self._is_comp_usb = is_comp_usb
+        self._comp_usb_flag = comp_usb_flag
         self.comp_usb_present = False
+        # A competition USB's "battery_alarm_enabled": false turns the low battery
+        # alarm off (no beeps, red LEDs or stopping code) while it's plugged in.
+        self.battery_alarm_bypassed = False
         self.comp_usb_flash_until = 0.0
         self.competition_mode = False
         self._lock = threading.Lock()
@@ -166,7 +189,12 @@ class RobotStatus:
 
     def _update_disks(self, disks: object, now: float) -> None:
         paths = disks.values() if isinstance(disks, dict) else ()
-        present = any(self._is_comp_usb(str(path)) for path in paths)
+        comp_usbs = [str(path) for path in paths if self._is_comp_usb(str(path))]
+        present = bool(comp_usbs)
+        bypassed = any(not self._comp_usb_flag(path, "battery_alarm_enabled") for path in comp_usbs)
+        if bypassed != self.battery_alarm_bypassed:
+            print(f"Competition USB: low battery alarm {'off' if bypassed else 'on'}", flush=True)
+        self.battery_alarm_bypassed = bypassed
         if present and not self.comp_usb_present:
             self.comp_usb_flash_until = now + COMP_USB_FLASH_SECONDS
         self.comp_usb_present = present
@@ -365,13 +393,13 @@ class BatteryAlarm:
     """
     Whether the battery is low: below low_voltage for low_seconds, so a moment's
     sag under load doesn't trip it. It clears once the voltage is above
-    recover_voltage for as long. Readings below 5V mean no battery is connected
-    (the Pi powered another way), which isn't an alarm.
+    recover_voltage for as long. Readings below no_battery_voltage (6V) mean no
+    battery is connected (the Pi powered another way), which isn't an alarm.
     """
 
-    NO_BATTERY = 5.0
-
-    def __init__(self, low_voltage: float, recover_voltage: float, low_seconds: float) -> None:
+    def __init__(self, low_voltage: float, recover_voltage: float, low_seconds: float,
+                 no_battery_voltage: float = 6.0) -> None:
+        self.no_battery_voltage = no_battery_voltage
         self.low_voltage = low_voltage
         self.recover_voltage = recover_voltage
         self.low_seconds = low_seconds
@@ -380,7 +408,7 @@ class BatteryAlarm:
 
     def update(self, voltage: float | None, now: float) -> bool:
         """Add a reading (None if unavailable); return whether the battery is low."""
-        if voltage is None or voltage < self.NO_BATTERY:
+        if voltage is None or voltage < self.no_battery_voltage:
             self.low, self._since = False, None
             return self.low
         crossing = voltage > self.recover_voltage if self.low else voltage < self.low_voltage
@@ -733,19 +761,22 @@ def load_config(path: Path = CONFIG_FILE) -> dict:
             raise ValueError(f"led_strip.{name} must be from 0 to 1")
     battery = config.setdefault("battery", {})
     for name, default in (("enabled", True), ("bus", 1), ("address", 0x48), ("scale", 6.0),
-                          ("low_voltage", 10.5), ("recover_voltage", 11.0), ("low_seconds", 5.0)):
+                          ("low_voltage", 10.5), ("recover_voltage", 11.0), ("low_seconds", 5.0),
+                          ("no_battery_voltage", 6.0)):
         battery.setdefault(name, default)
     if not isinstance(battery["enabled"], bool):
         raise ValueError("battery.enabled must be true or false")
     for name in ("bus", "address"):
         if isinstance(battery[name], bool) or not isinstance(battery[name], int):
             raise ValueError(f"battery.{name} must be a whole number")
-    for name in ("scale", "low_voltage", "recover_voltage", "low_seconds"):
+    for name in ("scale", "low_voltage", "recover_voltage", "low_seconds", "no_battery_voltage"):
         value = battery[name]
         if isinstance(value, bool) or not isinstance(value, (int, float)) or value < 0:
             raise ValueError(f"battery.{name} must be a number, 0 or more")
     if battery["recover_voltage"] < battery["low_voltage"]:
         raise ValueError("battery.recover_voltage must be at least battery.low_voltage")
+    if battery["no_battery_voltage"] > battery["low_voltage"]:
+        raise ValueError("battery.no_battery_voltage must be below battery.low_voltage")
     sounds = buzzer.setdefault("sounds", {})
     for name in sounds:
         if name not in DEFAULT_SOUNDS:
@@ -840,7 +871,7 @@ def main() -> None:
     settings = Settings()
     battery_config = config["battery"]
     alarm = BatteryAlarm(battery_config["low_voltage"], battery_config["recover_voltage"],
-                         battery_config["low_seconds"])
+                         battery_config["low_seconds"], battery_config["no_battery_voltage"])
     stop = threading.Event()
 
     GPIO.setwarnings(False)
@@ -950,7 +981,14 @@ def main() -> None:
                     monitor.close()
                     monitor = None
             was_low = alarm.low
-            low = alarm.update(voltage, now)
+            bypassed = status.battery_alarm_bypassed
+            if bypassed:
+                # A competition USB turned the alarm off. It starts afresh (low_seconds
+                # of low readings) if the USB is removed.
+                alarm.update(None, now)
+                low = False
+            else:
+                low = alarm.update(voltage, now)
             if low != was_low:
                 reading = "no reading" if voltage is None else f"{voltage:.2f}V"
                 print(f"Battery {'low' if low else 'recovered'}: {reading}", flush=True)
@@ -969,10 +1007,11 @@ def main() -> None:
                     print("Battery low: stopping robot code", flush=True)
                     next_kill = now + 3
             state = {"voltage": None if voltage is None else round(voltage, 2), "low": low,
-                     "low_voltage": battery_config["low_voltage"]}
+                     "low_voltage": battery_config["low_voltage"], "alarm_bypassed": bypassed}
             moved = (voltage is not None and last.get("voltage") is not None
                      and abs(voltage - last["voltage"]) >= 0.05)
             if status.connected and (state["low"] != last.get("low") or moved
+                                     or bypassed != last.get("alarm_bypassed")
                                      or (state["voltage"] is None) != (last.get("voltage") is None)
                                      or now >= next_publish):
                 client.publish(BATTERY_TOPIC, json.dumps(state), qos=0, retain=True)
@@ -1008,5 +1047,63 @@ def main() -> None:
         GPIO.cleanup()
 
 
+# While booting (psc-statusd --boot, from psc-bootled.service, early in boot until
+# psc-statusd starts): the booting pulse, from dim to full as boot progresses.
+BOOT_FLOOR = 0.25          # the pulse's peak at the start of boot, as a share of full
+BOOT_LED_MAX_SECONDS = 300  # give up, in case psc-statusd never starts
+
+
+class BootProgress:
+    """How far boot has got, 0 to 1: the share of systemd's queued start-up jobs done."""
+
+    def __init__(self, njobs=None) -> None:
+        self._njobs = njobs or self._systemd_njobs
+        self._peak = 0
+        self.value = 0.0
+
+    @staticmethod
+    def _systemd_njobs() -> int | None:
+        try:
+            result = subprocess.run(["systemctl", "show", "--property=NJobs", "--value"],
+                                    capture_output=True, text=True, timeout=2)
+            return int(result.stdout)
+        except (OSError, ValueError, subprocess.SubprocessError):
+            return None
+
+    def update(self) -> float:
+        jobs = self._njobs()
+        if jobs is not None:
+            self._peak = max(self._peak, jobs)
+            if self._peak:
+                # Never back down: more jobs can be queued as boot goes on.
+                self.value = max(self.value, 1 - jobs / self._peak)
+        return self.value
+
+
+def boot_level(progress: float) -> float:
+    return BOOT_FLOOR + (1 - BOOT_FLOOR) * min(max(progress, 0.0), 1.0)
+
+
+def boot_main() -> None:
+    """Pulse the status LED blue while the Pi boots, brighter as boot goes on."""
+    leds = open_led_chain(load_config())
+    if leds is None:
+        return
+    stop = threading.Event()
+    signal.signal(signal.SIGTERM, lambda *_: stop.set())
+    signal.signal(signal.SIGINT, lambda *_: stop.set())
+    progress = BootProgress()
+    started = next_check = time.monotonic()
+    while not stop.is_set() and time.monotonic() - started < BOOT_LED_MAX_SECONDS:
+        now = time.monotonic()
+        if now >= next_check:
+            progress.update()
+            next_check = now + 0.5
+        level = boot_level(progress.value)
+        leds.set_status(tuple(part * level for part in BOOTING.chain(now)))
+        stop.wait(TICK)
+    # The LEDs keep their colour until psc-statusd, starting now, takes over.
+
+
 if __name__ == "__main__":
-    main()
+    boot_main() if "--boot" in sys.argv[1:] else main()

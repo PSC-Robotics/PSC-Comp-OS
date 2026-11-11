@@ -840,7 +840,8 @@
 				` It's below ${battery.low_voltage} V, so robot code has been stopped. Charge or change the battery.`));
 		}
 		parts.push(el("p", { class: "mb-4" }, el("strong", {}, "Battery: "),
-			batteryText() || "No battery monitor found on the HAT."));
+			batteryText() || "No battery monitor found on the HAT.",
+			battery?.alarm_bypassed ? el("span", { class: "psc-muted" }, " (low battery alarm turned off by the competition USB)") : ""));
 		if (!state) {
 			parts.push(el("p", { class: "psc-muted" }, "Waiting for the robot's status service (psc-statusd)."));
 			settingsBody.replaceChildren(...parts);

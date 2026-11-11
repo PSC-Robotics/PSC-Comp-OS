@@ -48,7 +48,9 @@ crash = [
 # 12V rail on AIN0 through a 100k/20k divider. Its voltage shows in the web UI.
 # Below low_voltage for low_seconds, the buzzer beeps rapidly, every LED flashes
 # red and robot code is stopped, until it's above recover_voltage for as long.
-# Readings below 5V mean no battery (the Pi powered another way): no alarm.
+# Readings below no_battery_voltage mean no battery (the Pi powered another way, or
+# a flat or disconnected battery): no alarm. A competition USB whose astoria.json has
+# "battery_alarm_enabled": false turns the alarm off while it's plugged in.
 # Restart psc-statusd after editing.
 [battery]
 enabled = true
@@ -58,6 +60,7 @@ scale = 6.0             # battery voltage = the ADS1115's reading x scale
 low_voltage = 10.5      # 3.5V a cell on a 3S (12V) LiPo
 recover_voltage = 11.0
 low_seconds = 5.0
+no_battery_voltage = 6.0
 
 [mqtt]
 host = "localhost"

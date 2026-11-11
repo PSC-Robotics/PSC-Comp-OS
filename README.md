@@ -86,7 +86,7 @@ chain, plays sounds on a buzzer and handles a physical start button. The pins
 
 | State | Status LED |
 | --- | --- |
-| Booting | Blue, pulsing |
+| Booting | Blue, pulsing, brighter as boot goes on |
 | No code USB plugged in | Pink, flashing |
 | Waiting for the start button | Green, pulsing slowly (dim) |
 | Waiting for the start button in competition mode | Yellow, pulsing slowly (dim) |
@@ -115,8 +115,11 @@ GND to GND, and its DOUT to the second LED's DIN. Robot code sets the second LED
 with `robot.brain.led.colour = Colour.RED`, or `(255, 80, 0)` for any colour, over
 MQTT (`psc/leds`), and it turns off when the code stops. GPIO 18 is driven through
 the PWM hardware (`rpi_ws281x`; the analogue audio output is turned off, as it also
-uses the PWM hardware). The LEDs light once `psc-statusd` starts, 10 to 20 seconds
-after power-on.
+uses the PWM hardware). The status LED starts pulsing early in boot, a few seconds
+after power-on: `psc-bootled` runs `psc-statusd.py --boot` as soon as the root
+filesystem is up, getting brighter as systemd works through its start-up jobs, and
+`psc-statusd` stops it and takes over when it starts. Nothing can drive WS2812s
+before Linux starts, and the Pi's kernel has no WS2812 driver.
 
 `psc-statusd` follows Astoria's `astoria/astmetad` topic for competition mode, and
 `astoria/astdiskd` for competition USBs: a mounted disk with `astoria.json` and no
@@ -135,8 +138,11 @@ The battery voltage is read from the HAT's ADS1115 (I2C 0x48, AIN0 through a
 (retained) and shown at the top right of the web UI. Below `low_voltage` (10.5V) for 5
 seconds, the buzzer beeps rapidly, every LED flashes red and robot code is stopped
 (an `astoria/astprocd/request/kill` request), at full volume and brightness, until
-it's back above `recover_voltage` (11V). Readings below 5V mean no battery is
-connected. These are set under `[battery]` in `/etc/psc-status.toml`.
+it's back above `recover_voltage` (11V). Readings below `no_battery_voltage` (6V)
+mean no battery is connected, so no alarm. These are set under `[battery]` in
+`/etc/psc-status.toml`. A competition USB whose `astoria.json` has
+`"battery_alarm_enabled": false` turns the alarm off while it's plugged in; the
+voltage still shows.
 
 `sr.robot3` reads `/etc/psc-status.toml` to decide which pins robot code can't
 use: the start button, the buzzer and the LEDs' data pin, plus 14/15 (serial,

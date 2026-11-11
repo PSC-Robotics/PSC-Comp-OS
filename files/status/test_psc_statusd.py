@@ -168,6 +168,26 @@ def test_battery_alarm_ignores_no_battery():
     alarm = statusd.BatteryAlarm(10.5, 11.0, 0)
     assert not alarm.update(0.02, 0)
     assert not alarm.update(None, 1)
+    assert not alarm.update(5.9, 2)       # below 6V: no battery, so no alarm
+    alarm.update(6.1, 3)
+    assert alarm.update(6.1, 4)           # a flat battery above 6V still alarms
+
+
+def test_competition_usb_can_turn_the_battery_alarm_off(tmp_path):
+    comp = tmp_path / "comp"
+    comp.mkdir()
+    (comp / "astoria.json").write_text('{"mode": "COMP", "battery_alarm_enabled": false}')
+    robot = statusd.RobotStatus()
+    robot.handle(statusd.ASTDISKD_TOPIC, json.dumps({"disks": {"a": str(comp)}}).encode())
+    assert robot.battery_alarm_bypassed
+    (comp / "astoria.json").write_text('{"mode": "COMP"}')
+    robot.handle(statusd.ASTDISKD_TOPIC, json.dumps({"disks": {"a": str(comp)}}).encode())
+    assert not robot.battery_alarm_bypassed
+    (comp / "astoria.json").write_text('{"battery_alarm_enabled": "off"}')
+    robot.handle(statusd.ASTDISKD_TOPIC, json.dumps({"disks": {"a": str(comp)}}).encode())
+    assert robot.battery_alarm_bypassed
+    robot.handle(statusd.ASTDISKD_TOPIC, json.dumps({"disks": {}}).encode())
+    assert not robot.battery_alarm_bypassed
 
 
 class FakeStrip:
@@ -212,3 +232,17 @@ def test_config_battery_defaults(tmp_path):
     path.write_text("[start_button]\npin = 5\n")
     battery = statusd.load_config(path)["battery"]
     assert battery["low_voltage"] == 10.5 and battery["address"] == 0x48
+
+
+def test_boot_progress_follows_systemds_job_queue():
+    jobs = iter([None, 40, 120, 90, 100, 30, 0])
+    progress = statusd.BootProgress(njobs=lambda: next(jobs))
+    assert progress.update() == 0              # systemd not answering yet
+    assert progress.update() == 0              # 40 queued: the most so far
+    assert progress.update() == 0              # 120 queued
+    assert progress.update() == pytest.approx(0.25)
+    assert progress.update() == pytest.approx(0.25)  # more queued: never goes back
+    assert progress.update() == pytest.approx(0.75)
+    assert progress.update() == 1
+    assert statusd.boot_level(0) == statusd.BOOT_FLOOR
+    assert statusd.boot_level(1) == 1

@@ -8,6 +8,9 @@ install -o root -g root -m 755 /tmp/packer/status/psc-statusd.py /usr/local/lib/
 install -o root -g root -m 644 /tmp/packer/status/psc-status.toml /etc/psc-status.toml
 install -o root -g root -m 644 /tmp/packer/status/psc-statusd.service /usr/lib/systemd/system/psc-statusd.service
 systemctl enable psc-statusd.service
+# The booting pulse from early in boot, until psc-statusd starts
+install -o root -g root -m 644 /tmp/packer/status/psc-bootled.service /usr/lib/systemd/system/psc-bootled.service
+systemctl enable psc-bootled.service
 
 # Set the pins up in the firmware so the buzzer is silent from power-on, before
 # Linux starts, and the start button input has its pull-up straight away.

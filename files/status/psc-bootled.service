@@ -1,0 +1,16 @@
+[Unit]
+Description=PSC Robotics status LED while booting
+# As early as possible: the root filesystem is enough (it reads /etc/psc-status.toml
+# and the robot's Python). psc-statusd stops this when it starts, and takes the
+# LEDs over.
+DefaultDependencies=no
+Conflicts=shutdown.target
+Before=shutdown.target
+
+[Service]
+Type=simple
+ExecStart=/home/robot/.pyenv/versions/3.11.5/bin/python /usr/local/lib/psc-statusd.py --boot
+Environment=PYTHONDONTWRITEBYTECODE=1
+
+[Install]
+WantedBy=sysinit.target

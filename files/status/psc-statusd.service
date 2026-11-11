@@ -5,6 +5,9 @@ Wants=mosquitto.service
 
 [Service]
 Type=simple
+# Stop the boot LED pulse first (it exits within 0.05s), then take the LEDs over.
+# Not Conflicts=: both start in the boot transaction, which conflicting units can't.
+ExecStartPre=-/bin/systemctl stop psc-bootled.service
 ExecStart=/home/robot/.pyenv/versions/3.11.5/bin/python /usr/local/lib/psc-statusd.py
 Restart=always
 RestartSec=2
