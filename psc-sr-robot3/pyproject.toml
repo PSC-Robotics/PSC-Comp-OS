@@ -59,6 +59,8 @@ dependencies = [
     "pydantic >=1.9.1,<2",
     "typing-extensions; python_version<'3.10'",
     "tomli >=2.0.1,<3; python_version<'3.11'",
+    # april_vision needs OpenCV but doesn't install it; without it sr.robot3 can't be imported
+    "opencv-python-headless >=4.10,<5",
 ]
 classifiers = [
     "Topic :: Software Development :: Libraries :: Python Modules",
@@ -85,4 +87,5 @@ dev = [
     "pytest-cov",
     "paho-mqtt >=2,<3"
 ]
+# Kept so "psc-sr-robot3[vision]" still works; OpenCV is now always installed
 vision = ["opencv-python-headless >=4.10,<5"]

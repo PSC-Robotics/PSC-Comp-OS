@@ -17,11 +17,7 @@ it on a computer to get code completion and type checking while you write robot 
 pip install psc-sr-robot3
 ```
 
-To include OpenCV, for the camera:
-
-```bash
-pip install "psc-sr-robot3[vision]"
-```
+This also installs OpenCV, for the camera.
 
 Versions are Student Robotics' base version followed by PSC's own release number:
 2026.0.3.18 is PSC release 18 of sr-robot3 2026.0.3.
