@@ -772,19 +772,23 @@
 		["buzzer_volume", "volume_up", "Buzzer volume", "Status beeps and robot.buzzer."],
 		["led_brightness", "light_mode", "LED brightness", "The status LED and robot.brain.led."],
 	];
-	// Top right of the page, clear of the toolbar, which is crowded on a phone. Opens the settings.
+	// A toolbar button that opens the settings. On a phone, where the toolbar is at the bottom
+	// and full, CSS moves it to the top right of the page.
 	const batteryTag = el("span", {
-		class: "tag is-medium psc-battery", hidden: true, title: "Battery voltage", role: "button", tabindex: "0",
+		class: "button psc-battery", title: "Battery voltage", role: "button", tabindex: "0",
 		onclick: () => openSettings(),
 		onkeydown: event => { if (event.key === "Enter" || event.key === " ") { event.preventDefault(); openSettings(); } },
 	});
-	document.body.append(batteryTag);
+	const batteryControl = el("div", { class: "control psc-battery-control", hidden: true }, batteryTag);
 	const settingsButton = el("span", {
 		class: "button psc-cal-button", tabindex: "0", role: "button", title: "Robot settings",
 		"aria-label": "Robot settings", onclick: () => openSettings(),
 		onkeydown: event => { if (event.key === "Enter" || event.key === " ") { event.preventDefault(); openSettings(); } },
 	}, el("span", { class: "icon has-text-link" }, icon("tune")));
-	if (toolbar) toolbar.prepend(el("div", { class: "control" }, settingsButton));
+	if (toolbar) {
+		toolbar.prepend(el("div", { class: "control" }, settingsButton));
+		toolbar.prepend(batteryControl);
+	}
 
 	const settingsBody = el("section", { class: "modal-card-body" });
 	const settingsModal = el("div", { class: "modal", id: "psc-settings", role: "dialog", "aria-modal": "true", "aria-labelledby": "psc-settings-title" },
@@ -822,9 +826,11 @@
 	function renderBattery() {
 		const text = batteryText();
 		const low = !!robotSettings.battery?.low;
-		batteryTag.hidden = text === null;
-		batteryTag.className = `tag is-medium psc-battery ${low ? "is-danger" : "is-light"}`;
-		batteryTag.replaceChildren(icon(low ? "battery_alert" : "battery_full"), text || "");
+		batteryControl.hidden = text === null;
+		batteryTag.className = `button psc-battery${low ? " is-danger" : ""}`;
+		batteryTag.replaceChildren(
+			el("span", { class: `icon${low ? "" : " has-text-link"}` }, icon(low ? "battery_alert" : "battery_full")),
+			el("span", {}, text || ""));
 		if (settingsOpen()) renderSettings();
 	}
 

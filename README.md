@@ -135,7 +135,7 @@ the saved levels return when it ends.
 
 The battery voltage is read from the HAT's ADS1115 (I2C 0x48, AIN0 through a
 100k/20k divider, so the reading x 6) every second, published on `psc/battery`
-(retained) and shown at the top right of the web UI. Below `low_voltage` (10.5V) for 5
+(retained) and shown in the web UI's toolbar (at the top right on a phone). Below `low_voltage` (10.5V) for 5
 seconds, the buzzer beeps rapidly, every LED flashes red and robot code is stopped
 (an `astoria/astprocd/request/kill` request), at full volume and brightness, until
 it's back above `recover_voltage` (11V). Readings below `no_battery_voltage` (6V)
