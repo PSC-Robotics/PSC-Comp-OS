@@ -45,9 +45,9 @@ write_to = "sr/robot3/_version.py"
 include = ["sr.robot3", "sr.robot3.*"]
 
 [project]
-name = "sr-robot3"
-description = "Student Robotics API for Python 3"
-authors = [{name = "Student Robotics", email =  "kit-team@studentrobotics.org"}]
+name = "psc-sr-robot3"
+description = "PSC Robotics' version of the Student Robotics API for Python 3"
+authors = [{name = "PSC Robotics"}, {name = "Student Robotics", email = "kit-team@studentrobotics.org"}]
 readme = "README.md"
 license = {file = "LICENSE"}
 dynamic = ["version"]
@@ -69,9 +69,10 @@ classifiers = [
 ]
 
 [project.urls]
-Repository = "https://github.com/srobo/sr-robot"
-Homepage = "https://studentrobotics.org"
-Documentation = "https://docs.studentrobotics.org"
+Repository = "https://github.com/PSC-Robotics/Custom-SR-Library"
+Homepage = "https://psc-robotics.uk"
+Documentation = "https://docs.psc-robotics.uk"
+"Student Robotics sr-robot3" = "https://github.com/srobo/sr-robot"
 
 [project.optional-dependencies]
 dev = [

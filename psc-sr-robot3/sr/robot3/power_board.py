@@ -20,7 +20,7 @@ from .utils import (
 
 logger = logging.getLogger(__name__)
 BAUDRATE = 115200  # Since the power board is a USB device, this is ignored
-_SLEEP_FN = sleep  # For use in the simulator
+_SLEEP_FN: Callable[[float], None] = sleep  # For use in the simulator
 
 
 class PowerOutputPosition(IntEnum):

@@ -48,7 +48,7 @@ PSC Robotics OS for the brain board's Raspberry Pi (Pi 3, Pi 4 and Pi 400). Flas
 `PSC.Robotics.OS-image-<version>.img.xz` to an SD card with Raspberry Pi Imager or
 Etcher: see [Updating your Brain Board](https://docs.psc-robotics.uk/doc/updating-the-robot-os-xlSm2XpJ0E).
 
-Robot library: `sr-robot3 <PSC_SR_VERSION>`. Default sign-in: `robot` / `robot`.
+Robot library: `psc-sr-robot3 <PSC_SR_VERSION>`. Default sign-in: `robot` / `robot`.
 
 ## What's new in <version>
 
@@ -58,7 +58,7 @@ Robot library: `sr-robot3 <PSC_SR_VERSION>`. Default sign-in: `robot` / `robot`.
 
 - Name the asset with dots, as above: GitHub replaces the spaces in
   `PSC Robotics OS-image-....img.xz` with dots.
-- Get the library version from `PSC_SR_VERSION` in `files/python/install-packages.sh`
+- Get the library version (the same as on PyPI) from `PSC_SR_VERSION` in `files/python/install-packages.sh`
   at that commit.
 - For a pre-release, say first that it's experimental, what it's for, and what hasn't
   been tested on real hardware.

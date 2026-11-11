@@ -13,7 +13,6 @@ load it on its own to show gamepad input in the web interface.
 from __future__ import annotations
 
 import errno
-import fcntl
 import logging
 import os
 import select
@@ -23,6 +22,11 @@ import time
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Callable, Iterable, Optional
+
+try:
+    import fcntl
+except ImportError:  # Windows, where there are no Linux input devices to read
+    fcntl = None  # type: ignore[assignment]
 
 logger = logging.getLogger(__name__)
 
@@ -641,8 +645,9 @@ class GamepadManager:
                 self._ignored[path] = identity
                 continue
             with self._lock:
-                self._slots[free] = _Device(path, fd, info)
-                self._last_buttons[free] = self._slots[free].snapshot(0).buttons
+                device = _Device(path, fd, info)
+                self._slots[free] = device
+                self._last_buttons[free] = device.snapshot(0).buttons
                 self._lock.notify_all()
             self._ignored.pop(path, None)
             logger.info(f"Gamepad {free + 1} connected: {info.name}")

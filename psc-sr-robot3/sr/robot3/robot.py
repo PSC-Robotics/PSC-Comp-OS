@@ -8,12 +8,13 @@ import time
 from pathlib import Path
 from socket import socket
 from types import MappingProxyType
-from typing import Mapping, Optional, final
+from typing import Iterable, Mapping, Optional, Protocol, final
 
 from . import game_specific, pin_motors, timeout
 from ._version import __version__
 from .arduino import Arduino
 from .astoria import Metadata, RobotMode, init_astoria_mqtt
+from .battery import BrainBatterySensor
 from .brain import Brain
 from .bus_servo import BusServoAdapter
 from .buzzer import Buzzer
@@ -21,7 +22,6 @@ from .camera import AprilCamera, _setup_cameras
 from .exceptions import MetadataNotReadyError
 from .gamepad import Gamepad, GamepadManager
 from .kch import KCH
-from .battery import BrainBatterySensor
 from .leds import BrainLED
 from .logging import log_to_debug, setup_logging
 from .motor_board import MotorBoard
@@ -30,8 +30,15 @@ from .raw_serial import RawSerial
 from .servo_board import ServoBoard
 from .simulator.time_server import TimeServer
 from .utils import (
-    IN_SIMULATOR, FinalMeta, ensure_atexit_on_term, obtain_lock, singular,
+    IN_SIMULATOR, BoardIdentity, FinalMeta,
+    ensure_atexit_on_term, obtain_lock, singular,
 )
+
+
+class _Identifiable(Protocol):
+    def identify(self) -> BoardIdentity:
+        """The identity of the board."""
+
 
 logger = logging.getLogger(__name__)
 
@@ -205,7 +212,7 @@ class Robot(metaclass=FinalMeta):
         """
         # we only have one power board so make it iterable
         power_board = [] if self._no_powerboard else [self.power_board]
-        boards = itertools.chain(
+        boards: Iterable[_Identifiable] = itertools.chain(
             power_board,
             self.motor_boards.values(),
             self.servo_boards.values(),

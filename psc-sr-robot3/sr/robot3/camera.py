@@ -4,15 +4,16 @@ from __future__ import annotations
 import json
 import logging
 import re
+import sys
 from collections import Counter
 from pathlib import Path
 from typing import (
     Any, Callable, Dict, Iterable, List, Optional, Sequence, Union,
 )
 
-try:
+if sys.version_info >= (3, 11):
     import tomllib
-except ImportError:
+else:
     import tomli as tomllib
 
 from april_vision import CalibratedCamera, Frame, FrameSource

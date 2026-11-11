@@ -1,29 +1,30 @@
-# sr-robot3
+# psc-sr-robot3
 
-[![Lint & build](https://github.com/srobo/sr-robot/actions/workflows/test_build.yml/badge.svg)](https://github.com/srobo/sr-robot/actions/workflows/test_build.yml)
-[![PyPI version](https://badge.fury.io/py/sr-robot3.svg)](https://badge.fury.io/py/sr-robot3)
-[![Documentation Status](https://readthedocs.org/projects/pip/badge/?version=stable)](http://pip.pypa.io/en/stable/?badge=stable)
 [![MIT license](https://img.shields.io/badge/license-MIT-brightgreen.svg?style=flat)](https://opensource.org/licenses/MIT)
-![Bees](https://img.shields.io/badge/bees-110%25-yellow.svg)
 
-`sr-robot3` - Python 3 API for Student Robotics Kit
+`psc-sr-robot3` is PSC Robotics' version of [sr-robot3](https://github.com/srobo/sr-robot),
+the Student Robotics Python API. It adds PSC's brain board: GPIO motors and steppers,
+servo drivers and I2C, the brain board LED and battery sensor, the buzzer and gamepads.
+See the [PSC Robotics docs](https://docs.psc-robotics.uk).
 
-This is the API for Student Robotics, library for writing Robotics APIs.
-It will first be deployed at Student Robotics 2024.
+Your code imports it as `sr.robot3`, the same as Student Robotics' library, so the two
+can't be installed together. The PSC Robotics OS image already has it installed; install
+it on a computer to get code completion and type checking while you write robot code.
 
 ## Installation
 
-If you wish to install openCV from your package manager, you can install the base package with:
-
 ```bash
-pip install sr-robot3
+pip install psc-sr-robot3
 ```
 
-To install the full package, including openCV, you can install with:
+To include OpenCV, for the camera:
 
 ```bash
-pip install sr-robot3[vision]
+pip install "psc-sr-robot3[vision]"
 ```
+
+Versions are Student Robotics' base version followed by PSC's own release number:
+2026.0.3.18 is PSC release 18 of sr-robot3 2026.0.3.
 
 ## Usage
 

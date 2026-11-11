@@ -176,7 +176,7 @@ class MQTTClient:
         """Callback run each time the client connects to the broker."""
         if reason_code.is_failure:
             LOGGER.warning(
-                f"Failed to connect to MQTT broker. Return code: {reason_code.getName()}"  # type: ignore[no-untyped-call] # noqa: E501
+                f"Failed to connect to MQTT broker. Return code: {reason_code.getName()}"  # noqa: E501
             )
             return
 

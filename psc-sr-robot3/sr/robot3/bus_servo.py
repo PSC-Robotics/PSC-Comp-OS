@@ -328,7 +328,7 @@ class BusServo:
     @property
     def angle(self) -> float:
         """The servo's angle, in degrees (0 to 360 for ST/STS, 0 to 300 for SC/SCS)."""
-        return self.position * self._spec["degrees"] / (self._spec["max_position"] + 1)
+        return float(self.position * self._spec["degrees"] / (self._spec["max_position"] + 1))
 
     @angle.setter
     def angle(self, value: float) -> None:

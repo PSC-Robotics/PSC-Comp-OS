@@ -1,8 +1,8 @@
 from .arduino import AnalogPins, GPIOPinMode
 from .astoria import RobotMode
 from .exceptions import (
-    BatteryMonitorError, BoardDisconnectionError, I2CError, MetadataKeyError,
-    MetadataNotReadyError,
+    BatteryMonitorError, BoardDisconnectionError,
+    I2CError, MetadataKeyError, MetadataNotReadyError,
 )
 from .kch import Colour
 from .logging import add_trace_level

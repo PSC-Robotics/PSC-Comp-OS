@@ -18,7 +18,7 @@ pip install -r /tmp/packer/python/requirements.txt
 PSC_SR_SRC=/tmp/psc-sr-robot3
 PSC_SR_CLEAN=/tmp/psc-sr-robot3-clean
 PSC_SR_WHEELS=/tmp/psc-sr-robot3-wheel
-PSC_SR_VERSION=2026.0.3+psc.18
+PSC_SR_VERSION=2026.0.3.18  # the same as on PyPI (psc-sr-robot3)
 rm -rf "$PSC_SR_CLEAN" "$PSC_SR_WHEELS"
 mkdir -p "$PSC_SR_CLEAN"
 tar -C "$PSC_SR_SRC" \
@@ -26,9 +26,9 @@ tar -C "$PSC_SR_SRC" \
 	--exclude=__pycache__ --exclude=.pytest_cache --exclude=.DS_Store \
 	--exclude=./sr/robot3/_version.py \
 	-cf - . | tar -C "$PSC_SR_CLEAN" -xf -
-SETUPTOOLS_SCM_PRETEND_VERSION_FOR_SR_ROBOT3=$PSC_SR_VERSION \
+SETUPTOOLS_SCM_PRETEND_VERSION_FOR_PSC_SR_ROBOT3=$PSC_SR_VERSION \
 	pip wheel --no-deps --no-cache-dir --wheel-dir "$PSC_SR_WHEELS" "$PSC_SR_CLEAN"
-pip install "$PSC_SR_WHEELS"/sr_robot3-*.whl
+pip install "$PSC_SR_WHEELS"/psc_sr_robot3-*.whl
 
 # Fail the build unless the installed API is exactly the source we were given.
 python - "$PSC_SR_CLEAN" "$PSC_SR_VERSION" << "EOF"
@@ -41,14 +41,14 @@ dst = pathlib.Path(importlib.util.find_spec("sr.robot3").origin).parent
 files = sorted(p.relative_to(src) for p in src.rglob("*") if p.is_file())
 bad = [str(f) for f in files if not (dst / f).is_file() or not filecmp.cmp(src / f, dst / f, shallow=False)]
 assert not bad, f"installed sr.robot3 differs from source: {bad}"
-assert version("sr-robot3") == sys.argv[2], version("sr-robot3")
+assert version("psc-sr-robot3") == sys.argv[2], version("psc-sr-robot3")
 arduino = ast.parse((dst / "arduino.py").read_text())
 methods = {
     n.name for c in arduino.body if isinstance(c, ast.ClassDef) and c.name == "Arduino"
     for n in c.body if isinstance(n, ast.FunctionDef)
 }
 assert "stepper_move" in methods, "stepper support missing"
-print(f"sr-robot3 {sys.argv[2]} verified: {len(files)} files match source")
+print(f"psc-sr-robot3 {sys.argv[2]} verified: {len(files)} files match source")
 EOF
 rm -rf "$PSC_SR_CLEAN" "$PSC_SR_WHEELS"
 

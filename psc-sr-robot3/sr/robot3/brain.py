@@ -9,10 +9,11 @@ from pathlib import Path
 from types import ModuleType
 from typing import Callable, Optional
 
-from .i2c import (
-    DEFAULT_SERVO_DRIVER_ADDRESS, SERVO_DRIVER_USER, I2CBus, ServoDriver, SoftwareI2CBus,
-)
 from .battery import BrainBatterySensor
+from .i2c import (
+    DEFAULT_SERVO_DRIVER_ADDRESS, SERVO_DRIVER_USER,
+    I2CBus, ServoDriver, SoftwareI2CBus,
+)
 from .leds import STATUS_CONFIG, BrainLED
 from .logging import log_to_debug
 from .pin_motors import DCMotor, Stepper, register_driven_pins
