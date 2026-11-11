@@ -6,6 +6,7 @@ import ctypes
 import errno
 import logging
 import os
+import sys
 import threading
 import time
 from collections.abc import Iterable, Sequence
@@ -78,6 +79,8 @@ class _Transfer(ctypes.Structure):
 
 
 def _load_ioctl() -> Callable[..., Any]:
+    if sys.platform == "win32":
+        raise OSError(errno.ENOSYS, "Hardware I2C needs Linux")
     import fcntl
     return fcntl.ioctl
 

@@ -17,16 +17,15 @@ import logging
 import os
 import select
 import struct
+import sys
 import threading
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Callable, Iterable, Optional
 
-try:
+if sys.platform != "win32":  # Windows has no Linux input devices to read
     import fcntl
-except ImportError:  # Windows, where there are no Linux input devices to read
-    fcntl = None  # type: ignore[assignment]
 
 logger = logging.getLogger(__name__)
 
@@ -177,14 +176,22 @@ class DeviceIO:
     """Reads input devices. Replaced in tests."""
 
     def open(self, path: str) -> int:
+        if sys.platform == "win32":
+            raise OSError(errno.ENOSYS, "Gamepads are read from Linux input devices")
         return os.open(path, os.O_RDONLY | os.O_NONBLOCK | os.O_CLOEXEC)
 
     def close(self, fd: int) -> None:
         os.close(fd)
 
     def info(self, fd: int) -> DeviceInfo:
+        if sys.platform == "win32":
+            raise OSError(errno.ENOSYS, "Gamepads are read from Linux input devices")
+
         def ioctl(request: int, length: int) -> bytes:
-            return fcntl.ioctl(fd, request, bytes(length))
+            if sys.platform == "win32":
+                raise OSError(errno.ENOSYS, "Gamepads are read from Linux input devices")
+            else:
+                return fcntl.ioctl(fd, request, bytes(length))
 
         def text(request: Callable[[int], int]) -> str:
             try:
@@ -617,7 +624,7 @@ class GamepadManager:
                 stat = os.stat(path)
                 # ctime in ns: udev's permission change often lands in the same
                 # second the node appears, and must still retry the open
-                identity = (stat.st_rdev, stat.st_ctime_ns)
+                identity = (getattr(stat, "st_rdev", 0), stat.st_ctime_ns)
             except OSError:
                 identity = (0, 0)
             if self._ignored.get(path) == identity:
