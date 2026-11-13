@@ -36,7 +36,10 @@ def set_announcer(announcer: Optional[Callable[[str], None]]) -> None:
 
 
 def register_driven_pins(pins: tuple[int, ...]) -> None:
-    """Record Raspberry Pi pins that a DC motor drives."""
+    """
+    Record Raspberry Pi pins that robot code drives (DC motors' pins and outputs), so the
+    status service makes them inputs again when the code stops, even if it's killed.
+    """
     with _driven_lock:
         _driven_pins.extend(pin for pin in pins if pin not in _driven_pins)
     _announce()

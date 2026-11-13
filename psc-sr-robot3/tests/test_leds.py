@@ -77,7 +77,7 @@ def test_reserved_pins_follow_the_status_config(tmp_path) -> None:
         "[led_strip]\npins = [18, 10]\n[start_button]\npin = 6\n[buzzer]\npin = 12\n")
     pins = reserved_pins(path)
     assert sorted(pins) == [0, 1, 2, 3, 6, 7, 8, 9, 10, 11, 12, 14, 15, 18]
-    assert pins[8] == "the LED strip's SPI port"
+    assert pins[8] == "the LEDs' SPI port"
 
     path.write_text("[led_strip]\nenabled = false\n")
     assert sorted(reserved_pins(path)) == [0, 1, 2, 3, 5, 13, 14, 15]
@@ -89,5 +89,5 @@ def test_reserved_pins_follow_the_status_config(tmp_path) -> None:
 def test_spi_pins_are_reserved_when_the_chain_uses_gpio_10(tmp_path, pin) -> None:
     path = tmp_path / "psc-status.toml"
     path.write_text("[led_strip]\npins = [18, 10]\n")
-    with pytest.raises(ValueError, match="LED strip"):
+    with pytest.raises(ValueError, match="the LEDs"):
         Brain(gpio_loader=lambda: None, reserved=reserved_pins(path)).dc_motor(pin, 20)

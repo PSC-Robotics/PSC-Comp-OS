@@ -830,11 +830,12 @@ def parse_sound(steps, name: str) -> Sound:
 
 
 class MotorGuard:
-    """Stop the DC motors robot code drove from the Pi's pins, when the code stops.
+    """Release the Pi's pins robot code drove, DC motors' and outputs set with
+    robot.brain.pins, when the code stops.
 
-    The robot library publishes the pins to psc/motors. Its own exit handlers stop
-    the motors, but they can't run if the code is killed outright (SIGKILL), and the
-    pins would then keep whatever level they had.
+    The robot library publishes the pins to psc/motors. Its own exit handlers release
+    them, but they can't run if the code is killed outright (SIGKILL), and the pins
+    would then keep whatever level they had.
     """
 
     def __init__(self, gpio, own_pins: set[int]) -> None:
@@ -864,9 +865,9 @@ class MotorGuard:
                 # An input with a pull-down: the DRV8871's inputs read low, so it coasts.
                 self._gpio.setup(pin, self._gpio.IN, pull_up_down=self._gpio.PUD_DOWN)
             except Exception as error:
-                print(f"Failed to stop the motor on GPIO {pin}: {error}", flush=True)
+                print(f"Failed to release GPIO {pin}: {error}", flush=True)
         if pins:
-            print(f"Stopped DC motors on GPIO {pins}", flush=True)
+            print(f"Released GPIO {pins} (DC motors and outputs)", flush=True)
 
 
 def start_event() -> str:

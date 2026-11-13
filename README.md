@@ -162,6 +162,22 @@ systemctl status psc-statusd
 journalctl -u psc-statusd
 ```
 
+## GPIO Pins
+
+Robot code sets and reads GPIO pins directly with `robot.brain.pins`, as on SR's
+Arduino: `robot.brain.pins[17].mode = OUTPUT` then `.digital_write(True)`, or
+`INPUT` / `INPUT_PULLUP` then `.digital_read()`. Every pin from 4 to 27 can be used
+except the ones the robot uses itself, which raise a `ValueError` saying what uses them
+and what to use instead: the start button (5, `robot.wait_start()`), the buzzer (13,
+`robot.buzzer`) and the LEDs' data pin (18, `robot.brain.led`), as set in
+`/etc/psc-status.toml`, plus the HAT's EEPROM (0, 1), I2C with the battery sensor
+(2, 3) and the bus servos' serial port (14, 15). Driving the start button's pin could
+short it to GND when pressed, and the others would stop the buzzer, LEDs, battery alarm
+or HAT detection working. A pin belongs to one thing at a time: a pin used as a motor,
+stepper or I2C pin can't also be used here. Outputs start low and become inputs again
+when the code stops, even if it's killed (`psc-statusd` does that for every pin robot
+code drove). See `examples/gpio` and `examples/board_test`.
+
 ## I2C And Servo Drivers
 
 `robot.brain.servo_driver(sda=17, scl=27)` gives a PCA9685 driver on any two free

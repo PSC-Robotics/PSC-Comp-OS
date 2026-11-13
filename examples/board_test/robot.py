@@ -15,12 +15,12 @@ Copy this file to the top of a USB stick, named robot.py, and press the start bu
 The first LED is the status LED: it shows green while this runs, and pulses while
 paused. Robot code can't set its colour, as the robot uses it to show its status.
 
-Needs PSC Robotics OS 2026.0.26 or later.
+Needs PSC Robotics OS 2026.0.27 or later.
 """
 import math
 import time
 
-from sr.robot3 import BRAKE, BatteryMonitorError, Note, Robot
+from sr.robot3 import OUTPUT, BatteryMonitorError, Note, Robot
 
 # The HAT's GPIO screw terminals, in pairs, as printed on the board (BCM numbers).
 TERMINALS = {
@@ -64,13 +64,12 @@ def start_button_pressed(robot):
 
 robot = Robot()  # Waits here until the start button is pressed
 
-# Every GPIO terminal high: a DC motor's BRAKE drives both of its pins high.
-outputs = []
-for name, (pin_a, pin_b) in TERMINALS.items():
-    motor = robot.brain.dc_motor(pin_a, pin_b)
-    motor.power = BRAKE
-    outputs.append(motor)
-    print(f"{name}: GPIO {pin_a} and GPIO {pin_b} high (3.3V)")
+# Every GPIO terminal high
+for name, terminal_pins in TERMINALS.items():
+    for pin in terminal_pins:
+        robot.brain.pins[pin].mode = OUTPUT
+        robot.brain.pins[pin].digital_write(True)
+    print(f"{name}: GPIO {terminal_pins[0]} and GPIO {terminal_pins[1]} high (3.3V)")
 
 try:
     print(f"Battery: {robot.brain.battery_sensor.voltage:.2f}V")

@@ -9,6 +9,7 @@ from pathlib import Path
 from types import ModuleType
 from typing import Callable, Optional
 
+from .arduino import GPIOPinMode
 from .battery import BrainBatterySensor
 from .i2c import (
     DEFAULT_SERVO_DRIVER_ADDRESS, SERVO_DRIVER_USER,
@@ -27,8 +28,11 @@ LOGGER = logging.getLogger(__name__)
 
 # Pins the robot always uses: the HAT EEPROM (0, 1), I2C (2, 3) and the serial port for
 # bus servos (14, 15). The rest come from the status service's config: see reserved_pins.
-FIXED_RESERVED_PINS = {0: "HAT EEPROM", 1: "HAT EEPROM",
-                       2: "I2C (SDA)", 3: "I2C (SCL)",
+# Each says what uses the pin, and what to use instead where robot code can use it.
+I2C_HINT = "use robot.brain.i2c_bus(sda=2, scl=3)"
+FIXED_RESERVED_PINS = {0: "the HAT's EEPROM", 1: "the HAT's EEPROM",
+                       2: f"I2C (SDA), with the battery sensor: {I2C_HINT}",
+                       3: f"I2C (SCL), with the battery sensor: {I2C_HINT}",
                        14: "the serial port (bus servos)", 15: "the serial port (bus servos)"}
 # Besides MOSI (GPIO 10), the SPI port also takes these pins.
 SPI_PINS = (7, 8, 9, 11)
@@ -64,16 +68,16 @@ def reserved_pins(config_file: Path = STATUS_CONFIG) -> dict[int, str]:
         if isinstance(pin, int) and not isinstance(pin, bool) and 0 <= pin <= 27:
             pins[pin] = user
 
-    reserve(section('start_button').get('pin', 5), "the start button")
-    reserve(section('buzzer').get('pin', 13), "the buzzer")
+    reserve(section('start_button').get('pin', 5), "the start button: use robot.wait_start()")
+    reserve(section('buzzer').get('pin', 13), "the buzzer: use robot.buzzer.buzz()")
     strip = section('led_strip')
     if strip.get('enabled', True) is True and strip.get('count', 2) != 0:
         strip_pins = strip.get('pins', [18])
         for pin in strip_pins if isinstance(strip_pins, list) else []:
-            reserve(pin, "the LED strip (WS2812 data)")
+            reserve(pin, "the LEDs (WS2812 data): use robot.brain.led")
             if pin == 10:
                 for spi_pin in SPI_PINS:
-                    reserve(spi_pin, "the LED strip's SPI port")
+                    reserve(spi_pin, "the LEDs' SPI port")
     return pins
 
 
@@ -87,12 +91,116 @@ def _load_gpio() -> ModuleType:
     return GPIO
 
 
+DIGITAL_READ_MODES = (GPIOPinMode.INPUT, GPIOPinMode.INPUT_PULLUP, GPIOPinMode.OUTPUT)
+
+
+class BrainPin:
+    """
+    One of the brain board's GPIO pins, used like an Arduino's pins:
+    ``robot.brain.pins[17].mode = OUTPUT``, then ``digital_write(True)`` to set it to
+    3.3V. Or set the mode to ``INPUT`` or ``INPUT_PULLUP`` and use ``digital_read()``.
+
+    A pin starts as an input. Pins set as outputs go back to being inputs when your
+    code ends, so nothing is left driven.
+    """
+    __slots__ = ('_brain', '_pin')
+
+    def __init__(self, brain: Brain, pin: int) -> None:
+        self._brain = brain
+        self._pin = pin
+
+    @property
+    @log_to_debug
+    def mode(self) -> GPIOPinMode:
+        """The pin's mode: ``INPUT`` (the default), ``INPUT_PULLUP`` or ``OUTPUT``."""
+        return self._brain._gpio_modes.get(self._pin, GPIOPinMode.INPUT)
+
+    @mode.setter
+    @log_to_debug(setter=True)
+    def mode(self, value: GPIOPinMode) -> None:
+        """
+        Set the pin's mode.
+
+        :param value: ``INPUT``, ``INPUT_PULLUP`` (pulled up to 3.3V, for a button
+            wired to GND) or ``OUTPUT`` (starts low).
+        :raises IOError: If the mode isn't a GPIOPinMode.
+        :raises ValueError: If the pin is already used by a motor or I2C bus.
+        :raises RuntimeError: If not running on the robot.
+        """
+        if not isinstance(value, GPIOPinMode):
+            raise IOError("Pin mode only supports being set to a GPIOPinMode")
+        self._brain._set_pin_mode(self._pin, value)
+
+    @log_to_debug
+    def digital_read(self) -> bool:
+        """
+        Read the pin: True if it's high (3.3V), False if it's low (0V). An output
+        reads back the level it's set to.
+
+        :raises ValueError: If the pin is already used by a motor or I2C bus.
+        :raises RuntimeError: If not running on the robot.
+        """
+        if self._pin not in self._brain._gpio_modes:
+            self._brain._set_pin_mode(self._pin, GPIOPinMode.INPUT)
+        return bool(self._brain._load().input(self._pin))
+
+    @log_to_debug
+    def digital_write(self, value: bool) -> None:
+        """
+        Set the pin high (True, 3.3V) or low (False, 0V).
+
+        :param value: True for high, False for low.
+        :raises IOError: If the pin isn't an output.
+        """
+        if self.mode != GPIOPinMode.OUTPUT:
+            raise IOError(
+                f"Digital write is not supported in {self.mode.value}: set "
+                f"robot.brain.pins[{self._pin}].mode = OUTPUT first")
+        gpio = self._brain._load()
+        gpio.output(self._pin, gpio.HIGH if value else gpio.LOW)
+
+    def __repr__(self) -> str:
+        # Not self.mode: log_to_debug logs this repr, so reading a logged property loops
+        mode = self._brain._gpio_modes.get(self._pin, GPIOPinMode.INPUT)
+        return f"<{self.__class__.__qualname__} GPIO {self._pin} mode={mode.value}>"
+
+
+class BrainPins:
+    """
+    The brain board's GPIO pins, by BCM number: ``robot.brain.pins[17]``.
+
+    Pins the robot uses itself can't be used: the start button, the buzzer and the
+    LEDs' data pin (use ``robot.wait_start()``, ``robot.buzzer`` and
+    ``robot.brain.led``), the HAT's EEPROM (0, 1), I2C with the battery sensor
+    (2, 3) and the bus servos' serial port (14, 15). Asking for one raises a
+    ValueError saying what uses it. Every other pin from 4 to 27 can be used.
+    """
+    __slots__ = ('_brain', '_pins')
+
+    def __init__(self, brain: Brain) -> None:
+        self._brain = brain
+        self._pins: dict[int, BrainPin] = {}
+
+    def __getitem__(self, pin: int) -> BrainPin:
+        """
+        :raises ValueError: If the pin isn't a GPIO number from 4 to 27, or the robot
+            uses it.
+        """
+        self._brain._check_pin(pin, "pin")
+        if pin not in self._pins:
+            self._pins[pin] = BrainPin(self._brain, pin)
+        return self._pins[pin]
+
+    def __repr__(self) -> str:
+        return f"<{self.__class__.__qualname__}>"
+
+
 class Brain:
     """
     The brain board: its LED, and devices wired directly to its GPIO pins.
 
-    Supports DC motor drivers (such as the DRV8871), stepper motor drivers, I2C
-    devices and PCA9685 servo drivers.
+    Supports setting and reading GPIO pins directly (``pins``), DC motor drivers (such
+    as the DRV8871), stepper motor drivers, I2C devices and PCA9685 servo drivers.
     Pins are given as BCM GPIO numbers (e.g. 23 for GPIO 23, header pin 16),
     not header pin numbers.
 
@@ -107,6 +215,7 @@ class Brain:
     __slots__ = (
         '_gpio', '_gpio_loader', '_clock_ns', '_pin_modes', '_pwms', '_motors', '_claims',
         '_led', '_battery_sensor', '_reserved', '_i2c', '_i2c_buses', '_servo_drivers',
+        '_gpio_modes', '_pins',
     )
 
     def __init__(
@@ -133,6 +242,9 @@ class Brain:
         # Motors by kind and pins, and which motor uses each pin.
         self._motors: dict[tuple, object] = {}
         self._claims: dict[int, tuple] = {}
+        # Modes of pins set through robot.brain.pins
+        self._gpio_modes: dict[int, GPIOPinMode] = {}
+        self._pins = BrainPins(self)
 
     @property
     def led(self) -> BrainLED:
@@ -141,6 +253,28 @@ class Brain:
         ``robot.brain.led.colour = Colour.RED``.
         """
         return self._led
+
+    @property
+    def pins(self) -> BrainPins:
+        """
+        The GPIO pins, to set and read directly: ``robot.brain.pins[17]``. Pins the
+        robot uses itself (the start button, buzzer and LEDs) can't be used.
+        """
+        return self._pins
+
+    def _set_pin_mode(self, pin: int, mode: GPIOPinMode) -> None:
+        self._claim(('pin', pin), (pin,), ('pin',))
+        gpio = self._load()
+        if mode == GPIOPinMode.OUTPUT:
+            # Low until the code sets it, and back to an input when the code ends,
+            # even if it's killed (the status service does that for these pins).
+            gpio.setup(pin, gpio.OUT, initial=gpio.LOW)
+            register_driven_pins((pin,))
+        else:
+            pull = gpio.PUD_UP if mode == GPIOPinMode.INPUT_PULLUP else gpio.PUD_OFF
+            gpio.setup(pin, gpio.IN, pull_up_down=pull)
+        self._pin_modes[pin] = mode.value.lower()
+        self._gpio_modes[pin] = mode
 
     @property
     def battery_sensor(self) -> BrainBatterySensor:
@@ -244,6 +378,8 @@ class Brain:
     def _describe(owner: tuple) -> str:
         if owner[0] == 'i2c':
             return f"an I2C bus (SDA=GPIO {owner[1]}, SCL=GPIO {owner[2]})"
+        if owner[0] == 'pin':
+            return f"robot.brain.pins[{owner[1]}]"
         return "another motor"
 
     def _claim(self, key: tuple, pins: tuple[int, ...], names: tuple[str, ...]) -> None:
