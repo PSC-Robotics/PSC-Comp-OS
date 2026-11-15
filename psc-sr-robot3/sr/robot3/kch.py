@@ -20,8 +20,15 @@ except ImportError:
 
 # Robots without a Student Robotics KCH hat set SR_KCH_HAT=0 so the API
 # leaves the hat's GPIO pins alone; they may be wired to other hardware.
-if os.environ.get('SR_KCH_HAT', '1') == '0':
+NO_KCH_HAT = os.environ.get('SR_KCH_HAT', '1') == '0'
+if NO_KCH_HAT:
     HAS_HAT = False
+
+NO_KCH_HAT_HELP = (
+    "This robot has no Student Robotics KCH hat, so robot.kch.leds isn't available. "
+    "Use the brain board's LED instead: robot.brain.led.colour = Colour.RED, or "
+    "robot.brain.led.r = True for one channel"
+)
 
 
 logger = logging.getLogger(__name__)
@@ -151,7 +158,14 @@ class KCH:
 
     @property
     def leds(self) -> tuple['LED', ...]:
-        """User programmable LEDs."""
+        """
+        User programmable LEDs.
+
+        :raises RuntimeError: On a robot without a KCH hat (a PSC robot): use
+            ``robot.brain.led`` there.
+        """
+        if NO_KCH_HAT:
+            raise RuntimeError(NO_KCH_HAT_HELP)
         return self._leds
 
 

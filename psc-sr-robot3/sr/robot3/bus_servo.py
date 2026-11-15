@@ -312,23 +312,40 @@ class BusServo:
         return value
 
     @property
-    def position(self) -> int:
+    def position(self) -> float:
         """
-        The servo's position, in steps.
+        The servo's position, from -1 to 1 across its whole range, as on the servo
+        board and servo driver: -1 is one end, 0 the middle and 1 the other end.
+
+        Set it to move the servo, or to None to let it go limp (turn its torque off).
+        """
+        return float(-1 + 2 * self.steps / self._spec["max_position"])
+
+    @position.setter
+    def position(self, value: Optional[float]) -> None:
+        if value is None:
+            self.torque = False
+        else:
+            self.move(value)
+
+    @property
+    def steps(self) -> int:
+        """
+        The servo's position in its own units (steps), for finer control.
 
         ST/STS servos go from 0 to 4095 over 360°; SC/SCS servos from 0 to 1023 over 300°.
         """
         data = self._adapter.read(self.id, ADDR_PRESENT_POSITION, 2)
         return self._decode(data, signed=self.series == "sts")
 
-    @position.setter
-    def position(self, value: int) -> None:
-        self.move(position=value)
+    @steps.setter
+    def steps(self, value: int) -> None:
+        self.move(steps=value)
 
     @property
     def angle(self) -> float:
         """The servo's angle, in degrees (0 to 360 for ST/STS, 0 to 300 for SC/SCS)."""
-        return float(self.position * self._spec["degrees"] / (self._spec["max_position"] + 1))
+        return float(self.steps * self._spec["degrees"] / (self._spec["max_position"] + 1))
 
     @angle.setter
     def angle(self, value: float) -> None:
@@ -336,17 +353,19 @@ class BusServo:
 
     def move(
         self,
-        position: Optional[int] = None,
+        position: Optional[float] = None,
         *,
+        steps: Optional[int] = None,
         angle: Optional[float] = None,
         speed: int = 0,
         acceleration: int = 0,
         wait: bool = False,
     ) -> None:
         """
-        Move the servo to a position or an angle.
+        Move the servo to a position, a number of steps or an angle (give one).
 
-        :param position: The target position, in steps.
+        :param position: The target position, from -1 to 1 (as ``position``).
+        :param steps: The target, in steps (as ``steps``), instead of a position.
         :param angle: The target angle, in degrees, instead of a position.
         :param speed: Speed in steps per second; 0 is the servo's maximum.
         :param acceleration: ST/STS acceleration (0 to 254); 0 is the maximum.
@@ -354,16 +373,22 @@ class BusServo:
         :raises ValueError: If the target, speed or acceleration is out of range.
         """
         spec = self._spec
-        if (position is None) == (angle is None):
-            raise ValueError("Give either a position or an angle")
-        if angle is not None:
+        if [position, steps, angle].count(None) != 2:
+            raise ValueError("Give one of a position (-1 to 1), steps or an angle")
+        if position is not None:
+            if (isinstance(position, bool) or not isinstance(position, (int, float))
+                    or not -1 <= position <= 1):
+                raise ValueError("position must be a number from -1 to 1")
+            steps = round((position + 1) / 2 * spec["max_position"])
+        elif angle is not None:
             if not 0 <= angle <= spec["degrees"]:
                 raise ValueError(f"angle must be from 0 to {spec['degrees']:g} degrees")
-            position = round(angle * (spec["max_position"] + 1) / spec["degrees"])
-            position = min(position, spec["max_position"])
-        assert position is not None
-        if not isinstance(position, int) or not 0 <= position <= spec["max_position"]:
-            raise ValueError(f"position must be an integer from 0 to {spec['max_position']}")
+            steps = round(angle * (spec["max_position"] + 1) / spec["degrees"])
+            steps = min(steps, spec["max_position"])
+        assert steps is not None
+        if (not isinstance(steps, int) or isinstance(steps, bool)
+                or not 0 <= steps <= spec["max_position"]):
+            raise ValueError(f"steps must be a whole number from 0 to {spec['max_position']}")
         if not isinstance(speed, int) or not 0 <= speed <= 32767:
             raise ValueError("speed must be an integer from 0 to 32767")
         if not isinstance(acceleration, int) or not 0 <= acceleration <= 254:
@@ -371,12 +396,12 @@ class BusServo:
 
         if self.series == "sts":
             # acceleration, position, time (unused), speed, as the SDK's WritePosEx
-            data = (bytes([acceleration]) + self._encode(position)
+            data = (bytes([acceleration]) + self._encode(steps)
                     + b"\x00\x00" + self._encode(speed))
             self._adapter.write(self.id, ADDR_ACCELERATION, data)
         else:
             # position, time (unused), speed, as the SDK's WritePos
-            data = self._encode(position) + b"\x00\x00" + self._encode(speed)
+            data = self._encode(steps) + b"\x00\x00" + self._encode(speed)
             self._adapter.write(self.id, ADDR_GOAL_POSITION, data)
         if wait:
             self.wait_until_stopped()

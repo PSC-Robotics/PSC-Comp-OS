@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import json
 import logging
+import math
 from typing import Callable, Optional
 
 from .mqtt import MQTTClient
@@ -13,9 +14,17 @@ LOGGER = logging.getLogger(__name__)
 BUZZER_TOPIC = 'psc/buzzer'
 
 
+def volume_to_duty(volume: float) -> float:
+    """
+    The PWM duty cycle (0 to 50) for a volume from 0 to 1. A passive buzzer's loudness
+    follows sin(pi * duty), so this makes 0.5 sound about half as loud as 1.
+    """
+    return math.asin(volume) / math.pi * 100
+
+
 class Buzzer:
     """
-    The buzzer connected to the brain board.
+    The buzzer on the brain board: ``robot.brain.buzzer``, also ``robot.buzzer``.
 
     Tones are played by the robot's status service, which also uses the
     buzzer for system sounds such as the start beep, so the two never drive
@@ -52,8 +61,8 @@ class Buzzer:
         :param frequency: The frequency of the tone, in Hz. A `Note` can be used.
         :param duration: The duration of the tone, in seconds.
         :param blocking: Whether to block until the tone has finished playing.
-        :param volume: The volume, from 0 (silent) to 50 (loudest). Defaults to
-            the robot's code volume setting.
+        :param volume: The volume, from 0 (silent) to 1 (loudest). Defaults to the
+            robot's code volume. The web interface's buzzer volume setting scales it.
         :raises ValueError: If the frequency, duration or volume is out of range.
         """
         frequency_int = int(float_bounds_check(
@@ -62,8 +71,8 @@ class Buzzer:
             duration, 0, 60, "Duration is a float in seconds between 0 and 60")
         request: dict[str, float] = {"frequency": frequency_int, "duration": duration_s}
         if volume is not None:
-            request["volume"] = float_bounds_check(
-                volume, 0, 50, "Volume must be between 0 and 50")
+            request["volume"] = volume_to_duty(float_bounds_check(
+                volume, 0, 1, "Volume must be from 0 (silent) to 1 (loudest)"))
 
         if self._mqtt is None:
             LOGGER.warning("The buzzer is not available, so the tone was not played")

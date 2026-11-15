@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import atexit
 import logging
+import warnings
 from enum import Enum, IntEnum
 from types import MappingProxyType
 from typing import Optional
@@ -376,7 +377,7 @@ class Arduino(Board):
         return int(response)
 
     @log_to_debug
-    def stepper_move(
+    def _stepper_move(
         self,
         step_pin: int,
         direction_pin: int,
@@ -442,6 +443,29 @@ class Arduino(Board):
             raise RuntimeError(
                 "Arduino firmware does not support stepper_move; update its firmware"
             )
+
+    def stepper_move(
+        self,
+        step_pin: int,
+        direction_pin: int,
+        steps: int,
+        *,
+        direction: bool = True,
+        step_delay_us: int = 1000,
+    ) -> None:
+        """
+        Deprecated: use ``robot.arduino.stepper(step_pin, direction_pin).move(steps)``, which
+        also counts the motor's position. This still works, but logs a warning.
+
+        Moves a step/direction stepper driver by a number of steps, as ``stepper().move``.
+        """
+        warnings.warn(
+            "stepper_move() is deprecated: use "
+            f"robot.arduino.stepper({step_pin}, {direction_pin}).move("
+            f"{steps if direction else -steps}) instead",
+            DeprecationWarning, stacklevel=2)
+        self._stepper_move(
+            step_pin, direction_pin, steps, direction=direction, step_delay_us=step_delay_us)
 
     def _claim(self, key: tuple, pins: tuple[int, ...], names: tuple[str, ...]) -> None:
         for pin, name in zip(pins, names):
@@ -530,7 +554,7 @@ class Arduino(Board):
             self._claim(key, (step_pin, direction_pin), ('step_pin', 'direction_pin'))
 
             def move_steps(steps: int, direction: bool, delay: int) -> None:
-                self.stepper_move(
+                self._stepper_move(
                     step_pin, direction_pin, steps, direction=direction, step_delay_us=delay)
 
             def max_steps(delay: int) -> int:

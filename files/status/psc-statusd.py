@@ -77,6 +77,7 @@ LEDS_TOPIC = "psc/leds"
 SETTINGS_TOPIC = "psc/settings"          # the settings in use, retained, from this service
 SETTINGS_SET_TOPIC = "psc/settings/set"  # changes from the web UI
 BATTERY_TOPIC = "psc/battery"            # the battery voltage, retained
+BUTTON_TOPIC = "psc/start_button"        # the start button's state and presses, retained
 KILL_TOPIC = "astoria/astprocd/request/kill"
 CODE_ACTIVE = ("code_starting", "code_running")
 SETTINGS_FILE = Path(os.environ.get("PSC_SETTINGS_FILE", "/var/lib/psc/settings.json"))
@@ -442,6 +443,33 @@ def battery_state(voltage: float | None, low: bool, low_voltage: float, bypassed
     return {"voltage": None if voltage is None else round(voltage, 3), "low": low,
             "low_voltage": low_voltage, "alarm_bypassed": bypassed,
             "time": round(now, 3), "boot_id": BOOT_ID}
+
+
+class StartButtonState:
+    """
+    The start button's state for robot code (robot.brain.start_button): whether it's
+    held, and how many times it's been pressed since this service started. Updated from
+    the pin's edges, and from reading the pin regularly in case an edge is missed.
+    """
+
+    def __init__(self) -> None:
+        self._lock = threading.Lock()
+        self.pressed = False
+        self.presses = 0
+
+    def update(self, pressed: bool) -> bool:
+        """Record the button's level; return whether this is a new press."""
+        with self._lock:
+            new_press = pressed and not self.pressed
+            if new_press:
+                self.presses += 1
+            self.pressed = pressed
+            return new_press
+
+    def message(self, now: float) -> str:
+        with self._lock:
+            return json.dumps({"pressed": self.pressed, "presses": self.presses,
+                               "time": round(now, 3), "boot_id": BOOT_ID})
 
 
 def kill_request() -> str:
@@ -974,15 +1002,39 @@ def main() -> None:
 
     client.on_message = on_message
 
-    def on_button(channel: int) -> None:
-        # Pressed means pulled to the opposite of the idle level.
-        pressed_level = GPIO.LOW if pull == GPIO.PUD_UP else GPIO.HIGH
-        if GPIO.input(channel) == pressed_level and status.connected:
+    # Pressed means pulled to the opposite of the idle level.
+    pressed_level = GPIO.LOW if pull == GPIO.PUD_UP else GPIO.HIGH
+    start_button = StartButtonState()
+    button_lock = threading.Lock()
+
+    def check_button() -> None:
+        """Read the button; on a press, start the code (as the web UI's Start button)."""
+        with button_lock:
+            pressed = GPIO.input(button["pin"]) == pressed_level
+            changed = pressed != start_button.pressed
+            new_press = start_button.update(pressed)
+        if new_press and status.connected:
             client.publish(START_BUTTON_TOPIC, start_event(), qos=1)
             print("Start button pressed", flush=True)
+        if changed and status.connected:
+            client.publish(BUTTON_TOPIC, start_button.message(time.monotonic()), qos=1,
+                           retain=True)
 
-    edge = GPIO.FALLING if pull == GPIO.PUD_UP else GPIO.RISING
-    GPIO.add_event_detect(button["pin"], edge, callback=on_button, bouncetime=200)
+    # Both edges, so robot code sees releases too; bouncetime ignores contact bounce.
+    GPIO.add_event_detect(button["pin"], GPIO.BOTH, callback=lambda _: check_button(),
+                          bouncetime=50)
+
+    def watch_button() -> None:
+        """Read the button 20 times a second too (in case an edge is missed), and share
+        its state every second, so robot code can tell the reading is current."""
+        next_publish = 0.0
+        while not stop.is_set():
+            check_button()
+            now = time.monotonic()
+            if status.connected and now >= next_publish:
+                client.publish(BUTTON_TOPIC, start_button.message(now), qos=0, retain=True)
+                next_publish = now + 1
+            stop.wait(TICK)
 
     def watch_battery() -> None:
         """Read the battery each second, publish it, and run the low battery alarm."""
@@ -1051,6 +1103,7 @@ def main() -> None:
     client.loop_start()
     battery_thread = threading.Thread(target=watch_battery, name="battery", daemon=True)
     battery_thread.start()
+    threading.Thread(target=watch_button, name="button", daemon=True).start()
 
     print(f"psc-statusd: start button = BCM {button['pin']}, "
           f"buzzer = BCM {buzzer_config.get('pin', 13)} ({buzzer_config.get('type', 'passive')})", flush=True)

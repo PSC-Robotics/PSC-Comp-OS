@@ -10,12 +10,12 @@ Copy this file to the top of a USB stick, named robot.py, and press the start bu
   while the code runs, paused or not, and go low when it stops.
 - The start button pauses and plays. While paused, the status LED (the first LED)
   pulses smoothly and the robot beeps, as it does waiting for the start button; press
-  it again to carry on. The web interface's Start button does the same.
+  it again (or the web interface's Start button) to carry on.
 
 The first LED is the status LED: it shows green while this runs, and pulses while
 paused. Robot code can't set its colour, as the robot uses it to show its status.
 
-Needs PSC Robotics OS 2026.0.27 or later.
+Needs PSC Robotics OS 2026.0.28 or later.
 """
 import math
 import time
@@ -53,15 +53,6 @@ def rainbow(position):
     )
 
 
-def start_button_pressed(robot):
-    """
-    Whether the start button (or the web interface's Start button) has been pressed
-    since the last check. The robot only shares presses for wait_start, so this uses
-    the library's own record of them.
-    """
-    return robot._astoria.get_start_button_pressed()
-
-
 robot = Robot()  # Waits here until the start button is pressed
 
 # Every GPIO terminal high
@@ -89,12 +80,12 @@ while True:
         note, beats = TUNE[note_index]
         if note is not None:
             # A little shorter than the beat, so repeated notes sound separate
-            robot.buzzer.buzz(note, beats * BEAT * 0.9)
+            robot.brain.buzzer.buzz(note, beats * BEAT * 0.9)
         next_note = now + beats * BEAT
         note_index = (note_index + 1) % len(TUNE)
 
-    if start_button_pressed(robot):
-        robot.buzzer.buzz(Note.C6, 0)  # stop the tune's note
+    if robot.brain.start_button.was_pressed():
+        robot.brain.buzzer.buzz(Note.C6, 0)  # stop the tune's note
         print("Paused: press the start button to carry on. GPIO terminals stay high.")
         paused_at = time.monotonic()
         robot.wait_start()

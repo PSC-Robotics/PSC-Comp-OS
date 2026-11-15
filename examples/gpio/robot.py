@@ -8,8 +8,8 @@ Wiring, at the HAT's screw terminals:
 The LED flashes, and stays on while the button is held.
 
 Pins are BCM GPIO numbers, as printed on the HAT. The pins the robot uses itself (the
-start button, the buzzer and the LEDs) can't be used here: use robot.wait_start(),
-robot.buzzer and robot.brain.led for those. GPIO pins are 3.3V: never connect one to 5V
+start button, the buzzer and the LEDs) can't be used here: use robot.brain.start_button,
+robot.brain.buzzer and robot.brain.led for those. GPIO pins are 3.3V: never connect one to 5V
 or 12V.
 
 Needs PSC Robotics OS 2026.0.27 or later.

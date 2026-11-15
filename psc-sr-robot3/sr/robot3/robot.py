@@ -29,6 +29,7 @@ from .power_board import Note, PowerBoard
 from .raw_serial import RawSerial
 from .servo_board import ServoBoard
 from .simulator.time_server import TimeServer
+from .start_button import BrainStartButton
 from .utils import (
     IN_SIMULATOR, BoardIdentity, FinalMeta,
     ensure_atexit_on_term, obtain_lock, singular,
@@ -170,7 +171,8 @@ class Robot(metaclass=FinalMeta):
         self._kch = KCH()
         self._buzzer = Buzzer(self._mqtt, self.sleep)
         self._brain = Brain(
-            led=BrainLED(self._mqtt), battery_sensor=BrainBatterySensor(self._mqtt))
+            led=BrainLED(self._mqtt), battery_sensor=BrainBatterySensor(self._mqtt),
+            buzzer=self._buzzer, start_button=BrainStartButton(self._mqtt))
         self._gamepads = GamepadManager()
         self._motor_boards = MotorBoard._get_supported_boards(manual_motorboards)
         self._servo_boards = ServoBoard._get_supported_boards(manual_servoboards)
@@ -257,7 +259,7 @@ class Robot(metaclass=FinalMeta):
     @property
     def buzzer(self) -> Buzzer:
         """
-        Access the buzzer connected to the brain board.
+        Access the buzzer on the brain board, the same as ``robot.brain.buzzer``.
 
         :returns: The Buzzer object
         """
@@ -604,6 +606,8 @@ class Robot(metaclass=FinalMeta):
         if not self._no_powerboard:
             self.power_board._run_led.on()
         self.kch._start = False
+        # The press that started the code isn't one for robot.brain.start_button.was_pressed()
+        self._brain.start_button._forget_presses()
         self._publish_state('started')
 
         if IN_SIMULATOR:

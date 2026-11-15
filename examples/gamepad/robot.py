@@ -50,6 +50,6 @@ while True:
         right_motor.power = right_power
 
     if gamepad.was_pressed("a"):
-        robot.buzzer.buzz(880, 0.1)
+        robot.brain.buzzer.buzz(880, 0.1)
 
     robot.sleep(0.02)

@@ -117,7 +117,7 @@ def test_writing_needs_an_output(brain):
 
 @pytest.mark.parametrize(("pin", "hint"), [
     (13, r"the buzzer: use robot\.buzzer\.buzz\(\)"),
-    (5, r"the start button: use robot\.wait_start\(\)"),
+    (5, r"the start button: use robot\.brain\.start_button"),
     (18, r"the LEDs \(WS2812 data\): use robot\.brain\.led"),
     (2, r"I2C \(SDA\), with the battery sensor"),
     (0, "the HAT's EEPROM"),

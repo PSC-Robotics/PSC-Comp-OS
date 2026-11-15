@@ -4,7 +4,7 @@ from .exceptions import (
     BatteryMonitorError, BoardDisconnectionError,
     I2CError, MetadataKeyError, MetadataNotReadyError,
 )
-from .kch import Colour
+from .kch import Colour, UserLED
 from .logging import add_trace_level
 from .motor_board import MotorPower
 from .power_board import Note, PowerOutputPosition
@@ -26,6 +26,11 @@ A5 = AnalogPins.A5
 
 COMP = RobotMode.COMP
 DEV = RobotMode.DEV
+
+# For Student Robotics code: robot.kch.leds[LED_A]. A PSC robot has robot.brain.led instead.
+LED_A = UserLED.A
+LED_B = UserLED.B
+LED_C = UserLED.C
 
 INPUT = GPIOPinMode.INPUT
 INPUT_PULLUP = GPIOPinMode.INPUT_PULLUP
@@ -55,6 +60,9 @@ __all__ = [
     "I2CError",
     "INPUT",
     "INPUT_PULLUP",
+    "LED_A",
+    "LED_B",
+    "LED_C",
     "MetadataKeyError",
     "MetadataNotReadyError",
     "Note",

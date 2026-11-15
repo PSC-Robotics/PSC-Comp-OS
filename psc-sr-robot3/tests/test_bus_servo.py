@@ -86,7 +86,7 @@ def test_sts_move_writes_like_the_sdk(echo) -> None:
     bus = FakeBus({1: servo_memory()}, echo=echo)
     servo = make_adapter(bus).servos[1]
 
-    servo.move(2048, speed=1000, acceleration=50)
+    servo.move(steps=2048, speed=1000, acceleration=50)
 
     # WritePosEx: at address 41, [acc, pos L, pos H, time 0, 0, speed L, speed H]
     assert bus.written[-1] == _packet(1, 0x03, bytes([41, 50, 0x00, 0x08, 0, 0, 0xE8, 0x03]))
@@ -96,7 +96,7 @@ def test_scs_move_is_big_endian() -> None:
     bus = FakeBus({2: servo_memory(little_endian=False)})
     servo = make_adapter(bus).servo(2, series="scs")
 
-    servo.position = 512
+    servo.steps = 512
 
     # WritePos: at address 42, [pos H, pos L, time H, time L, speed H, speed L]
     assert bus.written[-1] == _packet(2, 0x03, bytes([42, 0x02, 0x00, 0, 0, 0, 0]))
@@ -120,11 +120,35 @@ def test_angles_convert_to_positions() -> None:
 def test_readings() -> None:
     bus = FakeBus({1: servo_memory(position=4000, voltage=74, temperature=31)})
     servo = make_adapter(bus).servos[1]
-    assert servo.position == 4000
+    assert servo.steps == 4000
     assert servo.voltage == pytest.approx(7.4)
     assert servo.temperature == 31
     bus.servos[1][56:58] = (0x8000 | 5).to_bytes(2, "little")  # sign bit, as the SDK
-    assert servo.position == -5
+    assert servo.steps == -5
+
+
+@pytest.mark.parametrize(("series", "max_steps"), [("sts", 4095), ("scs", 1023)])
+def test_position_is_minus_one_to_one_like_the_other_servos(series, max_steps) -> None:
+    order = "little" if series == "sts" else "big"
+    bus = FakeBus({1: servo_memory(position=0, little_endian=series == "sts")})
+    servo = make_adapter(bus).servo(1, series=series)
+    assert servo.position == pytest.approx(-1)
+    bus.servos[1][56:58] = max_steps.to_bytes(2, order)
+    assert servo.position == pytest.approx(1)
+
+    target = slice(7, 9) if series == "sts" else slice(6, 8)
+    for position, steps in ((-1, 0), (0, round(max_steps / 2)), (1, max_steps)):
+        servo.position = position
+        assert int.from_bytes(bus.written[-1][target], order) == steps
+    servo.move(0.5)
+    assert int.from_bytes(bus.written[-1][target], order) == round(0.75 * max_steps)
+
+
+def test_position_none_goes_limp() -> None:
+    bus = FakeBus({1: servo_memory()})
+    servo = make_adapter(bus).servos[1]
+    servo.position = None
+    assert bus.written[-1] == _packet(1, 0x03, bytes([40, 0]))
 
 
 def test_torque() -> None:
@@ -155,9 +179,11 @@ def test_change_id_unlocks_writes_and_relocks() -> None:
     ("call", "message"),
     [
         (lambda a: a.servos[1].position, "No reply from bus servo 1"),
-        (lambda a: a.servos[1].move(5000), "position must be"),
+        (lambda a: a.servos[1].move(1.5), "position must be a number from -1 to 1"),
+        (lambda a: a.servos[1].move(steps=5000), "steps must be a whole number"),
         (lambda a: a.servos[1].move(angle=361), "angle must be"),
-        (lambda a: a.servos[1].move(), "either a position or an angle"),
+        (lambda a: a.servos[1].move(), "Give one of a position"),
+        (lambda a: a.servos[1].move(0, steps=10), "Give one of a position"),
         (lambda a: a.servo(1, series="pwm"), "series"),
         (lambda a: a.servos[1].change_id(0), "new_id"),
     ],

@@ -246,3 +246,14 @@ def test_boot_progress_follows_systemds_job_queue():
     assert progress.update() == 1
     assert statusd.boot_level(0) == statusd.BOOT_FLOOR
     assert statusd.boot_level(1) == 1
+
+
+def test_start_button_state_counts_presses():
+    button = statusd.StartButtonState()
+    assert button.update(False) is False
+    assert button.update(True) is True       # a press
+    assert button.update(True) is False      # still held: the same press
+    assert button.update(False) is False
+    assert button.update(True) is True
+    message = json.loads(button.message(12.5))
+    assert message == {"pressed": True, "presses": 2, "time": 12.5, "boot_id": statusd.BOOT_ID}

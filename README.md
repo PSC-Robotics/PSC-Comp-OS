@@ -103,17 +103,23 @@ chain, plays sounds on a buzzer and handles a physical start button. The pins
 
 The sounds (frequency, length and volume of each note) and the default volume
 for robot code are set under `[buzzer]` in `/etc/psc-status.toml`; restart
-`psc-statusd` after editing. Volume is the PWM duty cycle, 0 to 50.
+`psc-statusd` after editing. In the config, volume is the PWM duty cycle, 0 to 50.
 
-Robot code plays tones with `robot.buzzer.buzz()`, which asks `psc-statusd` to
-play them over MQTT (`psc/buzzer`), so only one process drives the buzzer pin.
+Robot code plays tones with `robot.brain.buzzer.buzz()` (also `robot.buzzer`), with
+`volume` from 0 to 1, which the library turns into a duty cycle by loudness (a
+passive buzzer's loudness follows sin(pi x duty), so 0.5 sounds half as loud). It asks
+`psc-statusd` to play them over MQTT (`psc/buzzer`), so only one process drives the
+buzzer pin.
 The buzzer is silenced whenever robot code is not running, so a tone left
 playing stops when the code finishes, crashes or is killed.
 
 Wire the first LED's DIN to GPIO 18 (as on the Brain Board HAT), VDD to 5V and
 GND to GND, and its DOUT to the second LED's DIN. Robot code sets the second LED
-with `robot.brain.led.colour = Colour.RED`, or `(255, 80, 0)` for any colour, over
-MQTT (`psc/leds`), and it turns off when the code stops. GPIO 18 is driven through
+with `robot.brain.led.colour = Colour.RED`, or `(255, 80, 0)` for any colour, or one
+channel at a time as on SR's LEDs (`robot.brain.led.r = True`, or 0 to 255), over
+MQTT (`psc/leds`), and it turns off when the code stops. SR code's
+`robot.kch.leds[LED_A]` raises an error pointing to `robot.brain.led`, as there's no
+KCH hat. GPIO 18 is driven through
 the PWM hardware (`rpi_ws281x`; the analogue audio output is turned off, as it also
 uses the PWM hardware). The status LED starts pulsing early in boot, a few seconds
 after power-on: `psc-bootled` runs `psc-statusd.py --boot` as soon as the root
@@ -151,7 +157,12 @@ voltage still shows.
 use: the start button, the buzzer and the LEDs' data pin, plus 14/15 (serial,
 for bus servos), 2/3 (I2C) and 0/1 (HAT EEPROM). Wire the start button between GPIO 5 and
 GND; the internal pull-up is enabled. Never connect a GPIO pin to 5V. A press
-sends the same start event as the web UI's Start button.
+sends the same start event as the web UI's Start button. `psc-statusd` also
+publishes the button's state and a count of presses on `psc/start_button`
+(retained, each second and on every change, with the time and boot ID), which
+`robot.brain.start_button.is_pressed` and `.was_pressed()` read; the library treats
+a state more than 5 seconds old or from another boot as unknown (not pressed), and
+ignores the press that started the code.
 
 The Student Robotics `kchd` and `boot_40` services are not installed because
 they drive the KCH hat's pins, and robot code runs with `SR_KCH_HAT=0` so the
@@ -168,8 +179,8 @@ Robot code sets and reads GPIO pins directly with `robot.brain.pins`, as on SR's
 Arduino: `robot.brain.pins[17].mode = OUTPUT` then `.digital_write(True)`, or
 `INPUT` / `INPUT_PULLUP` then `.digital_read()`. Every pin from 4 to 27 can be used
 except the ones the robot uses itself, which raise a `ValueError` saying what uses them
-and what to use instead: the start button (5, `robot.wait_start()`), the buzzer (13,
-`robot.buzzer`) and the LEDs' data pin (18, `robot.brain.led`), as set in
+and what to use instead: the start button (5, `robot.brain.start_button`), the buzzer
+(13, `robot.brain.buzzer`) and the LEDs' data pin (18, `robot.brain.led`), as set in
 `/etc/psc-status.toml`, plus the HAT's EEPROM (0, 1), I2C with the battery sensor
 (2, 3) and the bus servos' serial port (14, 15). Driving the start button's pin could
 short it to GND when pressed, and the others would stop the buzzer, LEDs, battery alarm

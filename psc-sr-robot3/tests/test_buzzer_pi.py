@@ -46,13 +46,16 @@ def test_buzz_volume() -> None:
     mqtt = FakeMQTT()
     buzzer = Buzzer(mqtt, lambda _: None)
 
-    buzzer.buzz(440, 0.5, volume=10)
+    buzzer.buzz(440, 0.5, volume=1)
+    buzzer.buzz(440, 0.5, volume=0.5)
+    buzzer.buzz(440, 0.5, volume=0)
 
-    assert mqtt.published == [
-        (BUZZER_TOPIC, {"frequency": 440, "duration": 0.5, "volume": 10.0}, True),
-    ]
-    with pytest.raises(ValueError, match="Volume"):
-        buzzer.buzz(440, 0.5, volume=51)
+    # 0 to 1 becomes a PWM duty of 0 to 50, by loudness: half volume is a duty of 16.7
+    duties = [message["volume"] for _, message, _ in mqtt.published]
+    assert duties == pytest.approx([50.0, 100 / 6, 0.0])
+    for bad in (1.1, -0.1, 10):
+        with pytest.raises(ValueError, match="Volume must be from 0"):
+            buzzer.buzz(440, 0.5, volume=bad)
 
 
 def test_buzz_without_status_service_does_not_fail() -> None:

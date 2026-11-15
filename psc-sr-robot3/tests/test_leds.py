@@ -91,3 +91,48 @@ def test_spi_pins_are_reserved_when_the_chain_uses_gpio_10(tmp_path, pin) -> Non
     path.write_text("[led_strip]\npins = [18, 10]\n")
     with pytest.raises(ValueError, match="the LEDs"):
         Brain(gpio_loader=lambda: None, reserved=reserved_pins(path)).dc_motor(pin, 20)
+
+
+def test_channels_are_set_separately_as_on_student_robotics() -> None:
+    mqtt = FakeMQTT()
+    led = BrainLED(mqtt)
+    led.r = True
+    led.g = True
+    assert led.colour == Colour.YELLOW
+    assert (led.r, led.g, led.b) == (True, True, False)
+    led.r = False
+    assert led.colour == Colour.GREEN
+    assert [colours for _, colours, _ in mqtt.published] == [
+        [[255, 0, 0]], [[255, 255, 0]], [[0, 255, 0]]]
+
+
+def test_channels_take_a_brightness_too() -> None:
+    led = BrainLED(FakeMQTT())
+    led.colour = Colour.WHITE
+    led.b = 40
+    assert led.colour == (255, 255, 40)
+    assert led.b == 40
+    led.b = 0
+    assert led.b is False
+    led.g = 255
+    assert led.g is True
+
+
+@pytest.mark.parametrize("value", [256, -1, 0.5, "on", None])
+def test_invalid_channels(value) -> None:
+    led = BrainLED(FakeMQTT())
+    with pytest.raises(ValueError, match="True .on., False .off. or a number from 0 to 255"):
+        led.r = value
+    assert led.colour == Colour.OFF
+
+
+def test_kch_leds_point_to_the_brain_led_on_a_psc_robot(monkeypatch) -> None:
+    from sr.robot3 import LED_A, kch
+    monkeypatch.setattr(kch, "NO_KCH_HAT", True)
+    with pytest.raises(RuntimeError, match=r"Use the brain board's LED.*robot\.brain\.led"):
+        kch.KCH().leds[LED_A]
+
+
+def test_student_robotics_led_names_still_import() -> None:
+    from sr.robot3 import LED_A, LED_B, LED_C
+    assert (LED_A, LED_B, LED_C) == (0, 1, 2)

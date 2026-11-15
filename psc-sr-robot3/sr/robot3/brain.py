@@ -5,12 +5,14 @@ import atexit
 import logging
 import sys
 import time
+import warnings
 from pathlib import Path
 from types import ModuleType
 from typing import Callable, Optional
 
 from .arduino import GPIOPinMode
 from .battery import BrainBatterySensor
+from .buzzer import Buzzer
 from .i2c import (
     DEFAULT_SERVO_DRIVER_ADDRESS, SERVO_DRIVER_USER,
     I2CBus, ServoDriver, SoftwareI2CBus,
@@ -18,6 +20,7 @@ from .i2c import (
 from .leds import STATUS_CONFIG, BrainLED
 from .logging import log_to_debug
 from .pin_motors import DCMotor, Stepper, register_driven_pins
+from .start_button import BrainStartButton
 
 if sys.version_info >= (3, 11):
     import tomllib
@@ -68,7 +71,8 @@ def reserved_pins(config_file: Path = STATUS_CONFIG) -> dict[int, str]:
         if isinstance(pin, int) and not isinstance(pin, bool) and 0 <= pin <= 27:
             pins[pin] = user
 
-    reserve(section('start_button').get('pin', 5), "the start button: use robot.wait_start()")
+    reserve(section('start_button').get('pin', 5),
+            "the start button: use robot.brain.start_button")
     reserve(section('buzzer').get('pin', 13), "the buzzer: use robot.buzzer.buzz()")
     strip = section('led_strip')
     if strip.get('enabled', True) is True and strip.get('count', 2) != 0:
@@ -170,7 +174,7 @@ class BrainPins:
     The brain board's GPIO pins, by BCM number: ``robot.brain.pins[17]``.
 
     Pins the robot uses itself can't be used: the start button, the buzzer and the
-    LEDs' data pin (use ``robot.wait_start()``, ``robot.buzzer`` and
+    LEDs' data pin (use ``robot.brain.start_button``, ``robot.brain.buzzer`` and
     ``robot.brain.led``), the HAT's EEPROM (0, 1), I2C with the battery sensor
     (2, 3) and the bus servos' serial port (14, 15). Asking for one raises a
     ValueError saying what uses it. Every other pin from 4 to 27 can be used.
@@ -207,6 +211,8 @@ class Brain:
     :param gpio_loader: Returns the RPi.GPIO module; replaced in tests.
     :param clock_ns: A monotonic clock in nanoseconds; replaced in tests.
     :param led: The LED your code controls.
+    :param buzzer: The buzzer.
+    :param start_button: The start button.
     :param battery_sensor: The HAT's battery sensor.
     :param reserved: Pins robot code can't use, and what uses each; read from the
         status service's config if not given.
@@ -214,7 +220,8 @@ class Brain:
     """
     __slots__ = (
         '_gpio', '_gpio_loader', '_clock_ns', '_pin_modes', '_pwms', '_motors', '_claims',
-        '_led', '_battery_sensor', '_reserved', '_i2c', '_i2c_buses', '_servo_drivers',
+        '_led', '_buzzer', '_start_button', '_battery_sensor', '_reserved',
+        '_i2c', '_i2c_buses', '_servo_drivers',
         '_gpio_modes', '_pins',
     )
 
@@ -223,11 +230,15 @@ class Brain:
         gpio_loader: Callable[[], ModuleType] = _load_gpio,
         clock_ns: Callable[[], int] = time.perf_counter_ns,
         led: Optional[BrainLED] = None,
+        buzzer: Optional[Buzzer] = None,
+        start_button: Optional[BrainStartButton] = None,
         battery_sensor: Optional[BrainBatterySensor] = None,
         reserved: Optional[dict[int, str]] = None,
         i2c: Optional[I2CBus] = None,
     ) -> None:
         self._led = BrainLED(None) if led is None else led
+        self._buzzer = Buzzer(None, time.sleep) if buzzer is None else buzzer
+        self._start_button = BrainStartButton(None) if start_button is None else start_button
         self._battery_sensor = (
             BrainBatterySensor(None) if battery_sensor is None else battery_sensor)
         self._i2c = I2CBus() if i2c is None else i2c
@@ -253,6 +264,21 @@ class Brain:
         ``robot.brain.led.colour = Colour.RED``.
         """
         return self._led
+
+    @property
+    def buzzer(self) -> Buzzer:
+        """
+        The buzzer: ``robot.brain.buzzer.buzz(Note.C6, 0.5)``. Also ``robot.buzzer``.
+        """
+        return self._buzzer
+
+    @property
+    def start_button(self) -> BrainStartButton:
+        """
+        The start button, for your code to use once it has started:
+        ``robot.brain.start_button.was_pressed()`` or ``.is_pressed``.
+        """
+        return self._start_button
 
     @property
     def pins(self) -> BrainPins:
@@ -464,7 +490,7 @@ class Brain:
         return motor
 
     @log_to_debug
-    def stepper_move(
+    def _stepper_move(
         self,
         step_pin: int,
         direction_pin: int,
@@ -516,6 +542,29 @@ class Brain:
             if owner is not None and owner[0] != 'stepper':
                 raise ValueError(f"GPIO {pin} is already used by {self._describe(owner)}")
         self._step(step_pin, direction_pin, steps, direction, step_delay_us)
+
+    def stepper_move(
+        self,
+        step_pin: int,
+        direction_pin: int,
+        steps: int,
+        *,
+        direction: bool = True,
+        step_delay_us: int = 1000,
+    ) -> None:
+        """
+        Deprecated: use ``robot.brain.stepper(step_pin, direction_pin).move(steps)``, which
+        also counts the motor's position. This still works, but logs a warning.
+
+        Moves a step/direction stepper driver by a number of steps, as ``stepper().move``.
+        """
+        warnings.warn(
+            "stepper_move() is deprecated: use "
+            f"robot.brain.stepper({step_pin}, {direction_pin}).move("
+            f"{steps if direction else -steps}) instead",
+            DeprecationWarning, stacklevel=2)
+        self._stepper_move(
+            step_pin, direction_pin, steps, direction=direction, step_delay_us=step_delay_us)
 
     def _step(
         self, step_pin: int, direction_pin: int, steps: int, direction: bool,

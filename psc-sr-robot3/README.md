@@ -51,30 +51,65 @@ r.wait_start()
 
 ```
 
-An Arduino running firmware version 4 or later can drive a step/direction
-stepper driver with `arduino.stepper_move(step_pin, direction_pin, steps)`. The
-call blocks until the requested pulses are emitted; pass `direction=False` to
-drive DIR low, and use `step_delay_us` to set the low interval between pulses.
-Moves are limited to 350 ms per command so they fit within the serial timeout.
-This API does not provide acceleration or track motor position.
+### The brain board
 
-### Buzzer
+Everything on the brain board (the Raspberry Pi and its HAT) is under `robot.brain`.
+Pins are BCM GPIO numbers, as printed on the HAT.
 
-`robot.buzzer.buzz(frequency, duration, blocking=False)` plays a tone on the
-buzzer connected to the brain board, like the Student Robotics power board's
-`piezo.buzz()`. `Note` values such as `Note.A6` can be used for the frequency.
-A new tone replaces the one playing. Tones are played by the robot's status
-service, which also beeps when code is waiting for the start button, when start
-is pressed, and with fast short beeps when code crashes.
+```python
+from sr.robot3 import Colour, Note, OUTPUT, Robot
 
-### Steppers on the brain board's GPIO pins
+robot = Robot()
 
-`robot.brain.stepper_move(step_pin, direction_pin, steps)` drives a
-step/direction stepper driver wired to the Pi's GPIO header, using BCM GPIO
-numbers. It takes the same arguments as `arduino.stepper_move`, but has no
-350 ms limit: `steps` can be up to 1000000 and `step_delay_us` from 50 to
-1000000. Timing is done in software, so step timing can vary slightly. GPIO 5,
-13 and 18 are used by the robot and can't be used.
+robot.brain.led.colour = Colour.RED          # or (255, 80, 0) for any colour
+robot.brain.led.g = True                     # one channel, as on SR's LEDs (or 0 to 255)
+robot.brain.buzzer.buzz(Note.A6, 0.5)        # volume=0 to 1; also robot.buzzer
+if robot.brain.start_button.was_pressed():   # or .is_pressed, once the code has started
+    ...
+print(robot.brain.battery_sensor.voltage)
+
+robot.brain.pins[17].mode = OUTPUT           # INPUT, INPUT_PULLUP or OUTPUT
+robot.brain.pins[17].digital_write(True)
+
+motor = robot.brain.dc_motor(in1_pin=23, in2_pin=24)   # e.g. a DRV8871
+motor.power = 0.5                                      # -1 to 1, BRAKE or COAST
+
+stepper = robot.brain.stepper(25, 26)        # step, direction
+stepper.move(200)                            # also move_to() and position
+
+driver = robot.brain.servo_driver(sda=17, scl=27)      # a PCA9685
+driver.servos[0].position = 0.5                        # -1 to 1, or None to go limp
+
+bus = robot.brain.i2c_bus(sda=17, scl=27)
+print(bus.scan())
+```
+
+The pins the robot uses itself can't be used, and say what to use instead: the start
+button (`robot.brain.start_button`), the buzzer (`robot.brain.buzzer`), the LEDs
+(`robot.brain.led`), the HAT's EEPROM (0, 1), I2C with the battery sensor (2, 3) and the
+serial port for bus servos (14, 15). A pin can only be used for one thing at a time.
+
+### The Arduino
+
+As well as SR's `pins` and `ultrasound_measure()`, an Arduino with PSC's firmware drives
+motor drivers the same way as the brain board: `robot.arduino.dc_motor(in1_pin,
+in2_pin)` and `robot.arduino.stepper(step_pin, direction_pin)`.
+
+`stepper_move()` (on the brain board and the Arduino) is deprecated: use
+`stepper(step_pin, direction_pin).move(steps)`, which also counts the position.
+
+### Bus servos (experimental)
+
+Serial bus servos (Waveshare ST/SC, Feetech STS/SCS) on a bus servo adapter, such as the Waveshare Bus Servo Adapter (A):
+`robot.bus_servo_adapter.servos[1].position = 0.5`, from -1 to 1 like the other servos
+(or `None` to go limp), or in the servo's own units with `steps`, or in degrees with
+`angle`.
+
+### Student Robotics code
+
+`robot.kch.leds[LED_A]` raises an error saying to use `robot.brain.led`, as a PSC
+robot has no KCH hat. `robot.power_board`, `robot.motor_board` and `robot.servo_board`
+work when those boards are plugged in.
 
 ### Multiple cameras
 
