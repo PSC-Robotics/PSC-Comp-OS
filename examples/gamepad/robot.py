@@ -22,7 +22,7 @@ from sr.robot3 import BRAKE, Robot
 
 robot = Robot()
 left_motor = robot.brain.dc_motor(20, 21)
-right_motor = robot.brain.dc_motor(19, 26)
+right_motor = robot.brain.dc_motor(19, 4)
 
 robot.wait_for_gamepad()  # Waits here until a controller connects
 gamepad = robot.gamepad
