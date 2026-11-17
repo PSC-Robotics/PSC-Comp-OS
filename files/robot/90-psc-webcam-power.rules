@@ -1,0 +1,7 @@
+# Keep USB webcams powered up. Linux suspends an idle USB device after 2 seconds,
+# and some webcams (a Logitech C270) don't wake up properly: opening the camera
+# stalls for 5 seconds, Linux resets it, and after a cold boot it then sends only
+# noise until it's unplugged.
+# The webcam driver (uvcvideo) turns power saving on when it takes a camera, so
+# this runs when it has: on its "bind", for the camera's USB device (the parent).
+ACTION=="bind", SUBSYSTEM=="usb", ENV{DEVTYPE}=="usb_interface", DRIVER=="uvcvideo", RUN+="/bin/sh -c 'echo on > /sys%p/../power/control'"

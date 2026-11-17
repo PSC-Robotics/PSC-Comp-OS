@@ -100,6 +100,15 @@
 .psc-live-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); gap: 14px; margin-bottom: 8px; }
 .psc-live-grid figure { margin: 0; }
 .psc-live-grid img { display: block; width: 100%; aspect-ratio: 16 / 9; object-fit: contain; background: #0d2438; border-radius: 4px; }
+.psc-live-frame { position: relative; }
+.psc-live-status { display: none; position: absolute; inset: 0; align-items: center; justify-content: center; gap: 8px; padding: 12px; text-align: center; color: #c8d3de; font-size: 0.9rem; }
+.psc-live-frame.is-loading .psc-live-status,
+.psc-live-frame.is-failed .psc-live-status { display: flex; }
+.psc-live-frame.is-loading img, .psc-live-frame.is-failed img { visibility: hidden; }
+.psc-live-frame.is-loading, .psc-live-frame.is-failed { background: #0d2438; border-radius: 4px; }
+.psc-spinner { width: 1.4em; height: 1.4em; flex: none; border: 3px solid rgba(200, 211, 222, 0.3); border-top-color: #c8d3de; border-radius: 50%; animation: psc-spin 0.8s linear infinite; }
+@keyframes psc-spin { to { transform: rotate(360deg); } }
+@media (prefers-reduced-motion: reduce) { .psc-spinner { animation-duration: 2.4s; } }
 .psc-live-note { display: flex; align-items: center; gap: 6px; margin: 0 0 10px; }
 #modal-camera.psc-live-on #last-annotated-image,
 #modal-camera.psc-live-on #no-annotated-image-instructions,

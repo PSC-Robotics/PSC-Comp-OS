@@ -54,6 +54,13 @@ install -o root -g root -m 755 /tmp/packer/calibration/psc-camera-calibration.py
 install -o root -g root -m 644 /tmp/packer/calibration/psc-camera-calibration.service \
     /usr/lib/systemd/system/psc-camera-calibration.service
 systemctl enable psc-camera-calibration.service
+# Stuck camera recovery: the service (as robot) may reconnect a camera through this.
+install -o root -g root -m 755 /tmp/packer/calibration/psc-camera-reconnect \
+    /usr/local/sbin/psc-camera-reconnect
+echo 'robot ALL=(root) NOPASSWD: /usr/local/sbin/psc-camera-reconnect' \
+    > /etc/sudoers.d/020_psc-camera-reconnect
+chmod 440 /etc/sudoers.d/020_psc-camera-reconnect
+visudo -cf /etc/sudoers.d/020_psc-camera-reconnect
 
 # Retry the onboard BCM43430 with alternate packaged firmware on Pi 3 only.
 install -o root -g root -m 755 /tmp/packer/network/psc-pi3-wifi-recovery.sh \

@@ -625,9 +625,22 @@
 	const liveBox = el("div", { id: "psc-live", hidden: true });
 	if (cameraModal) $(".modal-card-body", cameraModal).prepend(liveBox);
 	let liveOn = false;
+	// While the live view is open, the camera list is checked every LIVE_REFRESH_MS,
+	// so cameras plugged in or unplugged appear and disappear without reopening it.
+	const LIVE_REFRESH_MS = 2000;
+	const liveTiles = new Map();  // camera key -> { figure, caption, index }
+	const liveNote = el("p", { class: "psc-camera-caption psc-live-note" });
+	const liveGrid = el("div", { class: "psc-live-grid" });
+	let liveTimer = null;
+	let liveSession = 0;  // a new number each time the live view opens
 
 	function stopLive() {
+		clearTimeout(liveTimer);
+		liveTimer = null;
+		liveSession += 1;
 		liveBox.querySelectorAll("img").forEach(image => { image.src = "data:,"; });
+		liveTiles.clear();
+		liveGrid.replaceChildren();
 		liveBox.replaceChildren();
 		liveBox.hidden = true;
 		cameraModal?.classList.remove("psc-live-on");
@@ -636,30 +649,94 @@
 		layoutCameras();
 	}
 
+	// One camera's stream, with a spinner until its first picture arrives. Browsers
+	// don't all fire "load" for a multipart stream, so also watch the image size.
+	function liveFrame(camera) {
+		const frame = el("div", { class: "psc-live-frame is-loading" },
+			el("div", { class: "psc-live-status", role: "status" },
+				el("span", { class: "psc-spinner", "aria-hidden": "true" }), " Starting camera..."));
+		const ready = () => {
+			clearInterval(watch);
+			frame.classList.remove("is-loading");
+		};
+		const image = el("img", {
+			alt: `Live view from ${camera.name}`,
+			onload: ready,
+			onerror: () => {
+				clearInterval(watch);
+				if (!frame.isConnected || !image.src.includes("/api/stream")) return;
+				frame.classList.remove("is-loading");
+				frame.classList.add("is-failed");
+				frame.querySelector(".psc-live-status").replaceChildren(icon("videocam_off"),
+					" No picture. Close this window and open it again, or replug the camera.");
+			},
+		});
+		const watch = setInterval(() => {
+			if (!frame.isConnected) clearInterval(watch);
+			else if (image.naturalWidth > 0) ready();
+		}, 200);
+		image.src = `/api/stream?index=${camera.index}&t=${Date.now()}`;
+		frame.prepend(image);
+		return frame;
+	}
+
+	function liveCaption(camera) {
+		return [
+			camera.robot_id ? code(`robot.cameras[${JSON.stringify(camera.robot_id)}]`) : camera.name,
+			camera.calibrated ? "" : " (not calibrated)",
+		];
+	}
+
+	// Show these cameras: keep the streams already open, start new ones, and stop
+	// the ones that were unplugged.
+	function showLiveCameras(cameras) {
+		const keyOf = camera => `${camera.index}|${camera.vidpid}|${camera.robot_id}`;
+		const wanted = new Map(cameras.map(camera => [keyOf(camera), camera]));
+		for (const [key, tile] of liveTiles) {
+			if (wanted.has(key)) continue;
+			tile.figure.querySelectorAll("img").forEach(image => { image.src = "data:,"; });
+			tile.figure.remove();
+			liveTiles.delete(key);
+		}
+		for (const [key, camera] of wanted) {
+			const tile = liveTiles.get(key);
+			if (tile) {
+				tile.caption.replaceChildren(...liveCaption(camera));
+				continue;
+			}
+			const caption = el("figcaption", { class: "psc-camera-caption" }, ...liveCaption(camera));
+			const figure = el("figure", {}, liveFrame(camera), caption);
+			const next = [...liveTiles.values()].filter(other => other.index > camera.index)
+				.sort((a, b) => a.index - b.index)[0];
+			liveGrid.insertBefore(figure, next ? next.figure : null);
+			liveTiles.set(key, { figure, caption, index: camera.index });
+		}
+		liveNote.replaceChildren(icon("videocam"), cameras.length
+			? " Live view. Robot code isn't running; when it runs, this shows the last image it took."
+			: " No cameras connected. Plug one in and it appears here.");
+		cameraCard?.classList.toggle("psc-camera-wide", cameras.length > 1);
+	}
+
+	async function refreshLive() {
+		const session = liveSession;
+		const { ok, data } = await api("/api/cameras/summary").catch(() => ({ ok: false, data: {} }));
+		if (!liveOn || robot.codeRunning || session !== liveSession) return;
+		// A failed check (the service restarting) leaves the streams as they are.
+		if (ok) showLiveCameras(data.cameras || []);
+		liveTimer = setTimeout(refreshLive, LIVE_REFRESH_MS);
+	}
+
 	async function updateLive() {
 		const wanted = cameraModal?.classList.contains("is-active") && !robot.codeRunning;
 		if (!wanted) { if (liveOn) stopLive(); return; }
 		if (liveOn) return;
 		liveOn = true;
-		const { ok, data } = await api("/api/cameras/summary").catch(() => ({ ok: false, data: {} }));
-		if (!liveOn || robot.codeRunning) return;
-		const cameras = ok ? data.cameras || [] : [];
 		cameraModal.classList.add("psc-live-on");
-		cameraCard?.classList.toggle("psc-camera-wide", cameras.length > 1);
-		liveBox.replaceChildren(
-			el("p", { class: "psc-camera-caption psc-live-note" }, icon("videocam"),
-				cameras.length
-					? " Live view. Robot code isn't running; when it runs, this shows the last image it took."
-					: " No cameras connected."),
-			el("div", { class: "psc-live-grid" }, cameras.map(camera => el("figure", {},
-				el("img", { src: `/api/stream?index=${camera.index}&t=${Date.now()}`, alt: `Live view from ${camera.name}` }),
-				el("figcaption", { class: "psc-camera-caption" },
-					camera.robot_id ? code(`robot.cameras[${JSON.stringify(camera.robot_id)}]`) : camera.name,
-					camera.calibrated ? "" : " (not calibrated)"),
-			))),
-		);
+		liveBox.replaceChildren(liveNote, liveGrid);
+		liveNote.replaceChildren(icon("videocam"), " Looking for cameras...");
 		liveBox.hidden = false;
 		if (titleText) titleText.textContent = " Live View";
+		await refreshLive();
 	}
 
 	if (cameraModal) new MutationObserver(updateLive).observe(cameraModal, { attributes: true, attributeFilter: ["class"] });
@@ -882,6 +959,24 @@
 				el("label", { class: "label" }, icon(symbol), ` ${label}`),
 				el("div", { class: "psc-setting-row" }, slider, output),
 				el("p", { class: "help" }, help)));
+		}
+		if ("camera_noise_fix" in state) {
+			const toggle = el("input", {
+				type: "checkbox", checked: state.camera_noise_fix,
+				onchange: event => {
+					if (!publish("psc/settings/set", JSON.stringify({ camera_noise_fix: event.target.checked }))) {
+						event.target.checked = !event.target.checked;
+						note.textContent = "Not connected to the robot";
+					}
+				},
+			});
+			const note = el("p", { class: "help" },
+				"If a camera only shows coloured noise until you unplug it, this reconnects it for you. ",
+				"The robot checks each camera when it starts and when the live view opens.");
+			parts.push(el("div", { class: "field" },
+				el("label", { class: "label" }, icon("videocam"), " Cameras"),
+				el("label", { class: "checkbox" }, toggle, " Reconnect stuck cameras"),
+				note));
 		}
 		parts.push(el("p", { class: "psc-muted" }, "Settings are saved on the robot. The low battery alarm always plays at full volume and brightness."));
 		settingsBody.replaceChildren(...parts);

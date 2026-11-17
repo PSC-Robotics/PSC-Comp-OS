@@ -148,8 +148,29 @@ def test_settings_ignore_a_corrupt_file(tmp_path):
 def test_competition_mode_uses_the_defaults_and_keeps_the_saved_values(tmp_path):
     settings = statusd.Settings(tmp_path / "settings.json")
     settings.update(message(buzzer_volume=10, led_brightness=20))
-    assert settings.effective(locked=True) == statusd.DEFAULT_SETTINGS
-    assert settings.effective(locked=False) == {"buzzer_volume": 10, "led_brightness": 20}
+    assert settings.effective(locked=True) == {**statusd.DEFAULT_SETTINGS, "camera_noise_fix": False}
+    assert settings.effective(locked=False) == {
+        "buzzer_volume": 10, "led_brightness": 20, "camera_noise_fix": False,
+    }
+
+
+def test_camera_noise_fix_is_off_by_default_and_saved_on_the_robot(tmp_path):
+    path = tmp_path / "settings.json"
+    settings = statusd.Settings(path)
+    assert settings.effective(locked=False)["camera_noise_fix"] is False
+    assert settings.update(message(camera_noise_fix=True)) == {"camera_noise_fix": True}
+    assert json.loads(path.read_text()) == {
+        "buzzer_volume": 100, "led_brightness": 100, "camera_noise_fix": True,
+    }
+    assert statusd.Settings(path).switches == {"camera_noise_fix": True}
+    assert settings.update(message(camera_noise_fix=1)) is None  # only true or false
+
+
+def test_competition_mode_locks_levels_but_not_switches(tmp_path):
+    settings = statusd.Settings(tmp_path / "settings.json")
+    assert settings.update(message(buzzer_volume=10), locked=True) is None
+    assert settings.update(message(camera_noise_fix=True), locked=True) == {"camera_noise_fix": True}
+    assert settings.effective(locked=True)["camera_noise_fix"] is True
 
 
 def test_battery_alarm_needs_a_sustained_low_reading():

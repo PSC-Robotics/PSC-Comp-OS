@@ -36,7 +36,8 @@ Pins, LED polarity, the LED chain, buzzer type, volume and sounds are set in
 The web UI's settings scale the buzzer's volume and the LEDs' brightness, from 0 to
 100% of those values. They're saved in /var/lib/psc/settings.json and applied at
 once. A competition USB (competition mode) puts both back to 100% and locks them,
-until it's removed.
+until it's removed. The same file holds on/off settings for other services (stuck
+camera recovery), which competition mode leaves alone.
 
 The battery is read from an ADS1115 on the HAT (I2C 0x48, AIN0, through a divider)
 and shown in the web UI. If it stays below [battery] low_voltage, the buzzer beeps
@@ -82,6 +83,10 @@ KILL_TOPIC = "astoria/astprocd/request/kill"
 CODE_ACTIVE = ("code_starting", "code_running")
 SETTINGS_FILE = Path(os.environ.get("PSC_SETTINGS_FILE", "/var/lib/psc/settings.json"))
 DEFAULT_SETTINGS = {"buzzer_volume": 100, "led_brightness": 100}
+# On/off settings, saved in the same file. A competition USB doesn't change or lock
+# them. camera_noise_fix: the camera service reconnects a webcam that sends only
+# noise (psc-camera-calibration reads it from the file).
+DEFAULT_SWITCHES = {"camera_noise_fix": False}
 
 # How often the LEDs are updated, and how long a flash or pulse takes.
 TICK = 0.05
@@ -307,29 +312,40 @@ def level_to_share(level: int) -> float:
 
 class Settings:
     """
-    The web UI's buzzer volume and LED brightness (each 0 to 100%), saved to a file.
+    The web UI's buzzer volume and LED brightness (each 0 to 100%), and its on/off
+    settings, saved to a file.
 
-    In competition mode both are 100% (the levels in /etc/psc-status.toml) and can't
-    be changed; the saved values come back when it ends.
+    In competition mode the levels are 100% (the levels in /etc/psc-status.toml) and
+    can't be changed; the saved values come back when it ends. On/off settings
+    aren't affected.
     """
 
     def __init__(self, path: Path = SETTINGS_FILE) -> None:
         self._path = path
         self.saved = dict(DEFAULT_SETTINGS)
+        self.switches = dict(DEFAULT_SWITCHES)
         try:
             stored = json.loads(path.read_text())
-            for name in DEFAULT_SETTINGS:
-                value = stored.get(name) if isinstance(stored, dict) else None
-                if isinstance(value, int) and not isinstance(value, bool) and 0 <= value <= 100:
-                    self.saved[name] = value
+            if isinstance(stored, dict):
+                for name in DEFAULT_SETTINGS:
+                    value = stored.get(name)
+                    if isinstance(value, int) and not isinstance(value, bool) and 0 <= value <= 100:
+                        self.saved[name] = value
+                for name in DEFAULT_SWITCHES:
+                    if isinstance(stored.get(name), bool):
+                        self.switches[name] = stored[name]
         except (OSError, ValueError):
             pass
 
     def effective(self, locked: bool) -> dict:
-        return dict(DEFAULT_SETTINGS) if locked else dict(self.saved)
+        levels = dict(DEFAULT_SETTINGS) if locked else dict(self.saved)
+        return {**levels, **self.switches}
 
-    def update(self, payload: bytes) -> dict | None:
-        """Apply a change from the web UI; return what changed, or None if it's invalid."""
+    def update(self, payload: bytes, locked: bool = False) -> dict | None:
+        """
+        Apply a change from the web UI; return what changed, or None if it's invalid.
+        While locked (competition mode), level changes are refused.
+        """
         try:
             request = json.loads(payload)
         except ValueError:
@@ -341,12 +357,23 @@ class Settings:
             value = request.get(name)
             if value is None:
                 continue
+            if locked:
+                return None
             if isinstance(value, bool) or not isinstance(value, (int, float)) or not 0 <= value <= 100:
                 return None
             if round(value) != self.saved[name]:
                 changed[name] = round(value)
+        for name in DEFAULT_SWITCHES:
+            value = request.get(name)
+            if value is None:
+                continue
+            if not isinstance(value, bool):
+                return None
+            if value != self.switches[name]:
+                changed[name] = value
         if changed:
-            self.saved.update(changed)
+            for name, value in changed.items():
+                (self.switches if name in DEFAULT_SWITCHES else self.saved)[name] = value
             self._save()
         return changed
 
@@ -354,7 +381,7 @@ class Settings:
         try:
             self._path.parent.mkdir(parents=True, exist_ok=True)
             temporary = self._path.with_suffix(".tmp")
-            temporary.write_text(json.dumps(self.saved) + "\n")
+            temporary.write_text(json.dumps({**self.saved, **self.switches}) + "\n")
             os.replace(temporary, self._path)
         except OSError as error:
             print(f"Failed to save the settings to {self._path}: {error}", flush=True)
@@ -979,7 +1006,7 @@ def main() -> None:
             return
         if msg.topic == SETTINGS_SET_TOPIC:
             # Locked in competition mode: the competition USB's levels stay.
-            changed = None if status.competition_mode else settings.update(msg.payload)
+            changed = settings.update(msg.payload, locked=status.competition_mode)
             apply_settings()
             if changed and "buzzer_volume" in changed and not alarm.low:
                 buzzer.play(status.sounds["waiting"])  # so the new volume can be heard

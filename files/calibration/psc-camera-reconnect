@@ -1,0 +1,45 @@
+#!/bin/sh
+# Reconnect a USB camera, as unplugging it and plugging it back in would, and print
+# its /dev/video index once it's back. Used by the camera service's stuck camera
+# recovery (a robot setting), which runs as the robot user through sudo.
+#
+# Usage: psc-camera-reconnect <video index>
+# It only acts on a USB device that has a video4linux camera.
+set -eu
+
+case "${1:-}" in
+    ''|*[!0-9]*) echo "usage: $0 <video index>" >&2; exit 2 ;;
+esac
+node="/sys/class/video4linux/video$1"
+[ -e "$node/device" ] || { echo "no camera video$1" >&2; exit 1; }
+
+# video4linux/videoN/device is the USB interface (e.g. 1-1.3:1.0); its parent is
+# the USB device (1-1.3), whose "authorized" file disconnects and reconnects it.
+interface=$(readlink -f "$node/device")
+usb=$(dirname "$interface")
+port=$(basename "$usb")
+case "$port" in
+    [0-9]*-[0-9]*) ;;
+    *) echo "video$1 isn't a USB camera" >&2; exit 1 ;;
+esac
+[ -w "$usb/authorized" ] || { echo "can't reconnect $port" >&2; exit 1; }
+
+echo 0 > "$usb/authorized"
+sleep 1
+echo 1 > "$usb/authorized"
+
+# Wait for the camera to come back, and print its new index.
+for _ in $(seq 1 40); do
+    sleep 0.25
+    for video in /sys/class/video4linux/video*; do
+        [ -e "$video/device" ] || continue
+        [ "$(cat "$video/index" 2>/dev/null)" = 0 ] || continue
+        [ "$(basename "$(dirname "$(readlink -f "$video/device")")")" = "$port" ] || continue
+        index=${video##*/video}
+        [ -e "/dev/video$index" ] || continue
+        echo "$index"
+        exit 0
+    done
+done
+echo "$port didn't come back" >&2
+exit 1

@@ -50,6 +50,22 @@ OPEN_LOCK = threading.Lock()
 OPEN_SETTLE_S = 0.5
 # A live stream that gets no picture for this long reopens its camera.
 STREAM_STALL_S = 4.0
+# Nearly black first pictures (average brightness below DARK_LEVEL of 255) are
+# skipped for up to DARK_START_S after a camera opens. A dark room still shows.
+DARK_LEVEL = 8
+DARK_START_S = 1.5
+# Stuck camera recovery (off unless turned on in the web UI's robot settings).
+# Some webcams (seen on a Logitech C270) can come back from a USB reset sending
+# only noise until they're unplugged. In a real picture neighbouring pixels are
+# nearly the same (an average difference of about 1 to 3, up to about 15 for a
+# very busy scene); in noise the average is about 50. A camera whose first
+# NOISE_FRAMES pictures are all noise is reconnected, as unplugging it would.
+SETTINGS_FILE = Path(os.environ.get("PSC_SETTINGS_FILE", "/var/lib/psc/settings.json"))
+NOISE_SETTING = "camera_noise_fix"
+NOISE_LEVEL = 20.0
+NOISE_FRAMES = 5
+NOISE_RECONNECTS = 2
+RECONNECT_HELPER = "/usr/local/sbin/psc-camera-reconnect"
 Point3D = tuple[float, float, float]
 Point2D = tuple[float, float]
 CalibrationView = tuple[list[Point3D], list[Point2D], int, tuple[int, int], list[int]]
@@ -149,6 +165,84 @@ def open_camera(index: int) -> "cv2.VideoCapture | None":
         return capture
 
 
+def noise_fix_enabled() -> bool:
+    """Whether stuck camera recovery is turned on (saved on the robot, not the USB)."""
+    try:
+        return json.loads(SETTINGS_FILE.read_text()).get(NOISE_SETTING) is True
+    except (OSError, ValueError, AttributeError):
+        return False
+
+
+def noise_level(frame: np.ndarray) -> float:
+    """The average difference between neighbouring pixels, about 50 for pure noise."""
+    gray = frame if frame.ndim == 2 else cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+    gray = gray[::2].astype(np.int16)  # every other row is plenty, and twice as fast
+    return float(np.abs(np.diff(gray, axis=1)).mean())
+
+
+def reconnect_camera(index: int) -> int | None:
+    """
+    Reconnect a camera's USB device, as unplugging it would, and return its new
+    /dev/video index, or None if it didn't come back.
+    """
+    import subprocess
+
+    try:
+        result = subprocess.run(
+            ["sudo", "-n", RECONNECT_HELPER, str(index)],
+            capture_output=True, text=True, timeout=30,
+        )
+    except (OSError, subprocess.TimeoutExpired) as error:
+        print(f"Couldn't reconnect camera {index}: {error}", flush=True)
+        return None
+    if result.returncode != 0:
+        print(f"Couldn't reconnect camera {index}: {result.stderr.strip()}", flush=True)
+        return None
+    try:
+        return int(result.stdout.strip())
+    except ValueError:
+        return None
+
+
+def is_stuck(capture: "cv2.VideoCapture") -> bool:
+    """Whether a camera's first pictures are all noise."""
+    noisy = 0
+    for _ in range(NOISE_FRAMES):
+        ok, frame = capture.read()
+        if not ok:
+            return False  # no pictures is the stall check's job
+        if noise_level(frame) < NOISE_LEVEL:
+            return False
+        noisy += 1
+    return noisy == NOISE_FRAMES
+
+
+def open_checked_camera(index: int) -> "tuple[cv2.VideoCapture | None, int]":
+    """
+    Open a camera; with stuck camera recovery on, reconnect it while it sends
+    only noise. Returns the capture and the camera's index, which can change.
+    """
+    capture = open_camera(index)
+    if capture is None or not noise_fix_enabled():
+        return capture, index
+    for attempt in range(NOISE_RECONNECTS):
+        if not is_stuck(capture):
+            return capture, index
+        print(f"Camera {index} is sending only noise; reconnecting it ({attempt + 1}/{NOISE_RECONNECTS})", flush=True)
+        capture.release()
+        with OPEN_LOCK:  # no other camera starts while this one comes back
+            new_index = reconnect_camera(index)
+        if new_index is None:
+            return None, index
+        index = new_index
+        capture = open_camera(index)
+        if capture is None:
+            return None, index
+    if is_stuck(capture):
+        print(f"Camera {index} still sends only noise. Unplug it and plug it back in.", flush=True)
+    return capture, index
+
+
 def filter_jpeg_warnings() -> None:
     """
     Drop libjpeg's "Corrupt JPEG data" warnings from this program's stderr.
@@ -220,10 +314,11 @@ class CameraFeed:
             return self.number, (self.jpeg if self.number != after else None)
 
     def _run(self) -> None:
-        capture = open_camera(self.index)
+        # The device's index can change if stuck camera recovery reconnects it.
+        capture, device = open_checked_camera(self.index)
         self.opened = capture is not None
         self.started.set()
-        last_frame = time.monotonic()
+        last_frame = opened_at = time.monotonic()
         idle_since: float | None = None
         try:
             while capture is not None and not CODE_RUNNING.is_set():
@@ -241,12 +336,16 @@ class CameraFeed:
                         # The camera stopped sending pictures: start it again
                         print(f"Camera {self.index} stopped sending pictures; reopening it", flush=True)
                         capture.release()
-                        capture = open_camera(self.index)
+                        capture, device = open_checked_camera(device)
                         last_frame = time.monotonic()
                     else:
                         time.sleep(0.05)
                     continue
                 last_frame = time.monotonic()
+                # A webcam's first pictures can be black while its exposure settles:
+                # skip them for a moment, so the live view's spinner shows instead.
+                if self.number == 0 and last_frame - opened_at < DARK_START_S and frame.mean() < DARK_LEVEL:
+                    continue
                 ok, encoded = cv2.imencode(".jpg", frame)
                 with LOCK:
                     LAST_FRAMES[self.index] = frame
@@ -540,6 +639,26 @@ def view_preview(image: np.ndarray, detections: list) -> tuple[str, list[float]]
     x0, y0 = corners.min(axis=0)
     x1, y1 = corners.max(axis=0)
     return thumbnail, [float(x0 / width), float(y0 / height), float(x1 / width), float(y1 / height)]
+
+
+def check_cameras_at_start() -> None:
+    """
+    With stuck camera recovery on, check every camera once the robot has started,
+    so a camera stuck since boot is fixed before robot code uses it, without
+    anyone opening the live view.
+    """
+    time.sleep(10)  # let the cameras finish starting up
+    if not noise_fix_enabled():
+        return
+    for camera in connected_cameras():
+        if CODE_RUNNING.is_set():
+            return  # robot code is using the cameras
+        with LOCK:
+            if camera.index in ACTIVE_STREAMS:
+                continue  # the live view already checked it
+        capture, _ = open_checked_camera(camera.index)
+        if capture is not None:
+            capture.release()
 
 
 def capture_frame(index: int) -> np.ndarray:
@@ -1013,4 +1132,5 @@ if __name__ == "__main__":
     CALIBRATION_DIR.mkdir(parents=True, exist_ok=True)
     threading.Thread(target=watch_usb_calibrations, name="usb-import", daemon=True).start()
     watch_code_status()
+    threading.Thread(target=check_cameras_at_start, name="camera-check", daemon=True).start()
     ThreadingHTTPServer(("127.0.0.1", 8765), Handler).serve_forever()
