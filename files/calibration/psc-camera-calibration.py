@@ -44,6 +44,12 @@ BOARD_FILE = Path(os.environ.get(
 ))
 LOCK = threading.Lock()
 BOARD_LOCK = threading.Lock()
+# Cameras are started one at a time. Some webcams (older Logitech models) stop sending
+# pictures if another camera on the same USB bus starts streaming at the same moment.
+OPEN_LOCK = threading.Lock()
+OPEN_SETTLE_S = 0.5
+# A live stream that gets no picture for this long reopens its camera.
+STREAM_STALL_S = 4.0
 Point3D = tuple[float, float, float]
 Point2D = tuple[float, float]
 CalibrationView = tuple[list[Point3D], list[Point2D], int, tuple[int, int], list[int]]
@@ -69,9 +75,11 @@ CODE_RUNNING_MESSAGE = "Robot code is running and may be using the camera. Stop 
 def manifest_calibration_locations(root: Path) -> list[str]:
     for name in ("camera-calibrations.toml", "camera-calibrations.json"):
         manifest_path = root / name
-        if not manifest_path.is_file():
-            continue
         try:
+            # Inside the try: a drive or folder the robot user can't read raises
+            # PermissionError here, and must only skip that drive.
+            if not manifest_path.is_file():
+                continue
             if manifest_path.suffix == ".json":
                 manifest = json.loads(manifest_path.read_text())
             else:
@@ -98,11 +106,18 @@ def manifest_calibration_locations(root: Path) -> list[str]:
 def calibration_locations() -> list[str]:
     configured_locations = os.environ.get("OPENCV_CALIBRATIONS", "").split(":")
     locations = [*calibrations, *(path for path in configured_locations if path)]
-    if USB_MOUNT_ROOT.is_dir():
-        mounts = [USB_MOUNT_ROOT, *USB_MOUNT_ROOT.iterdir()]
-        for mount in mounts:
-            if mount.is_dir():
-                locations.extend(manifest_calibration_locations(mount))
+    try:
+        mounts = [USB_MOUNT_ROOT, *USB_MOUNT_ROOT.iterdir()] if USB_MOUNT_ROOT.is_dir() else []
+    except OSError as error:
+        print(f"Couldn't look for USB drives in {USB_MOUNT_ROOT}: {error}", flush=True)
+        mounts = []
+    for mount in mounts:
+        try:
+            if not mount.is_dir():
+                continue
+        except OSError:
+            continue  # A folder the robot user can't read: not a usable drive
+        locations.extend(manifest_calibration_locations(mount))
     return list(dict.fromkeys(locations))
 
 
@@ -117,6 +132,142 @@ def is_read_only_calibration(camera: object) -> bool:
         return False
 
 
+def open_camera(index: int) -> "cv2.VideoCapture | None":
+    """Open a camera and wait for its first picture, one camera at a time."""
+    with OPEN_LOCK:
+        capture = cv2.VideoCapture(index)
+        if not capture.isOpened():
+            capture.release()
+            return None
+        # Compressed pictures: in raw (YUYV) mode each webcam reserves about a third
+        # of the USB bus at 640x480, so a third camera gets no pictures at all.
+        # A camera without MJPEG ignores this and stays raw.
+        capture.set(cv2.CAP_PROP_FOURCC, cv2.VideoWriter.fourcc(*"MJPG"))
+        capture.set(cv2.CAP_PROP_BUFFERSIZE, 1)
+        capture.read()  # Start it streaming before the next camera starts
+        time.sleep(OPEN_SETTLE_S)
+        return capture
+
+
+def filter_jpeg_warnings() -> None:
+    """
+    Drop libjpeg's "Corrupt JPEG data" warnings from this program's stderr.
+
+    Some webcams (older Logitech models) pad their MJPEG pictures, and libjpeg
+    warns about it on every picture, although the pictures decode correctly.
+    OpenCV's log level doesn't cover libjpeg, so filter stderr itself and pass
+    everything else through.
+    """
+    real_stderr = os.dup(2)
+    read_end, write_end = os.pipe()
+    os.dup2(write_end, 2)
+    os.close(write_end)
+
+    def forward() -> None:
+        with os.fdopen(read_end, "rb") as pipe, os.fdopen(real_stderr, "wb", buffering=0) as out:
+            for line in pipe:
+                if not line.startswith(b"Corrupt JPEG data"):
+                    out.write(line)
+
+    threading.Thread(target=forward, name="stderr-filter", daemon=True).start()
+
+
+class CameraFeed:
+    """
+    One camera's live pictures, shared by everyone watching it.
+
+    A camera can only stream to one program at a time, so each camera has one
+    reader thread, and every live view of it (several browser tabs, or the
+    calibration preview) gets its pictures from that thread. The camera is
+    released a moment after the last viewer leaves.
+    """
+
+    FEEDS: "dict[int, CameraFeed]" = {}
+
+    def __init__(self, index: int) -> None:
+        self.index = index
+        self.viewers = 0
+        self.number = 0  # Counts pictures, so viewers can wait for a new one
+        self.jpeg: bytes | None = None
+        self.started = threading.Event()
+        self.opened = False
+        self.stopped = False
+        self.condition = threading.Condition()
+        threading.Thread(target=self._run, name=f"camera-{index}", daemon=True).start()
+
+    @classmethod
+    def join(cls, index: int) -> "CameraFeed":
+        with LOCK:
+            feed = cls.FEEDS.get(index)
+            if feed is None or feed.stopped:
+                feed = cls.FEEDS[index] = CameraFeed(index)
+                ACTIVE_STREAMS.add(index)
+            feed.viewers += 1
+            return feed
+
+    def leave(self) -> None:
+        with LOCK:
+            self.viewers -= 1
+
+    def wait_started(self) -> bool:
+        self.started.wait(15)
+        return self.opened
+
+    def next_jpeg(self, after: int) -> tuple[int, bytes | None]:
+        """Wait for a picture newer than number `after`."""
+        with self.condition:
+            self.condition.wait_for(lambda: self.number != after or self.stopped, timeout=1)
+            return self.number, (self.jpeg if self.number != after else None)
+
+    def _run(self) -> None:
+        capture = open_camera(self.index)
+        self.opened = capture is not None
+        self.started.set()
+        last_frame = time.monotonic()
+        idle_since: float | None = None
+        try:
+            while capture is not None and not CODE_RUNNING.is_set():
+                with LOCK:
+                    if self.viewers > 0:
+                        idle_since = None
+                    else:
+                        idle_since = idle_since or time.monotonic()
+                        if time.monotonic() - idle_since > 2:
+                            self.stopped = True  # Under LOCK, so join() starts a new feed
+                            break
+                ok, frame = capture.read()
+                if not ok:
+                    if time.monotonic() - last_frame > STREAM_STALL_S:
+                        # The camera stopped sending pictures: start it again
+                        print(f"Camera {self.index} stopped sending pictures; reopening it", flush=True)
+                        capture.release()
+                        capture = open_camera(self.index)
+                        last_frame = time.monotonic()
+                    else:
+                        time.sleep(0.05)
+                    continue
+                last_frame = time.monotonic()
+                ok, encoded = cv2.imencode(".jpg", frame)
+                with LOCK:
+                    LAST_FRAMES[self.index] = frame
+                if ok:
+                    with self.condition:
+                        self.jpeg = encoded.tobytes()
+                        self.number += 1
+                        self.condition.notify_all()
+        finally:
+            if capture is not None:
+                capture.release()
+            with LOCK:
+                self.stopped = True
+                if CameraFeed.FEEDS.get(self.index) is self:
+                    del CameraFeed.FEEDS[self.index]
+                    ACTIVE_STREAMS.discard(self.index)
+                    LAST_FRAMES.pop(self.index, None)
+            with self.condition:
+                self.condition.notify_all()
+
+
 def is_read_only_camera_index(index: int) -> bool:
     return any(
         camera["index"] == index and camera["read_only"]
@@ -129,7 +280,8 @@ def cameras() -> list[dict[str, object]]:
     with LOCK:
         if CAMERA_CACHE is not None and ACTIVE_STREAMS:
             return [dict(camera) for camera in CAMERA_CACHE]
-    found = find_cameras(calibration_locations(), include_uncalibrated=True)
+    with OPEN_LOCK:  # find_cameras opens every camera to check it works
+        found = find_cameras(calibration_locations(), include_uncalibrated=True)
     robot_ids = assign_camera_ids(found) if assign_camera_ids else [None] * len(found)
     detected = {camera.index: camera for camera in found}
     robot_id_by_index = {camera.index: robot_id for camera, robot_id in zip(found, robot_ids)}
@@ -138,13 +290,14 @@ def cameras() -> list[dict[str, object]]:
         device = f"/dev/video{index}"
         if not Path(device).exists():
             continue
-        capture = cv2.VideoCapture(index)
-        if not capture.isOpened():
+        with OPEN_LOCK:
+            capture = cv2.VideoCapture(index)
+            if not capture.isOpened():
+                capture.release()
+                continue
+            width = int(capture.get(cv2.CAP_PROP_FRAME_WIDTH)) or 1280
+            height = int(capture.get(cv2.CAP_PROP_FRAME_HEIGHT)) or 720
             capture.release()
-            continue
-        width = int(capture.get(cv2.CAP_PROP_FRAME_WIDTH)) or 1280
-        height = int(capture.get(cv2.CAP_PROP_FRAME_HEIGHT)) or 720
-        capture.release()
         camera = detected.get(index)
         vidpid = camera.vidpid if camera else f"video:{index}"
         result.append({
@@ -235,7 +388,10 @@ def usb_drives() -> list[Path]:
 
 
 def is_code_drive(drive: Path) -> bool:
-    return (drive / "robot.py").is_file() or (drive / "robot-settings.toml").is_file()
+    try:
+        return (drive / "robot.py").is_file() or (drive / "robot-settings.toml").is_file()
+    except OSError:
+        return False  # A drive the robot user can't read
 
 
 def save_calibration_to_usb(source: Path) -> list[str]:
@@ -267,12 +423,19 @@ def save_calibration_to_usb(source: Path) -> list[str]:
     return saved
 
 
+def readable_dir(path: str) -> bool:
+    try:
+        return Path(path).is_dir() and os.access(path, os.R_OK | os.X_OK)
+    except OSError:
+        return False
+
+
 def usb_calibration_map() -> dict[str, tuple[Path, str]]:
     """Map USB ID to (calibration file, drive name) for calibrations on USB drives."""
     found: dict[str, tuple[Path, str]] = {}
     for drive in usb_drives():
         folders = [str(drive / USB_CALIBRATION_FOLDER), *manifest_calibration_locations(drive)]
-        folders = [folder for folder in dict.fromkeys(folders) if Path(folder).is_dir()]
+        folders = [folder for folder in dict.fromkeys(folders) if readable_dir(folder)]
         for vidpid, path in generate_calibration_file_map(folders).items():
             found.setdefault(vidpid, (Path(path), drive.name))
     return found
@@ -383,10 +546,10 @@ def capture_frame(index: int) -> np.ndarray:
     with LOCK:
         if index in ACTIVE_STREAMS and index in LAST_FRAMES:
             return LAST_FRAMES[index].copy()
-    capture = cv2.VideoCapture(index)
+    capture = open_camera(index)
+    if capture is None:
+        raise RuntimeError("Unable to open camera")
     try:
-        if not capture.isOpened():
-            raise RuntimeError("Unable to open camera")
         ok, frame = capture.read()
         if not ok:
             raise RuntimeError("Unable to capture camera frame")
@@ -555,33 +718,22 @@ class Handler(BaseHTTPRequestHandler):
             if CODE_RUNNING.is_set():
                 self.send_json(409, {"error": CODE_RUNNING_MESSAGE})
                 return
-            with LOCK:
-                ACTIVE_STREAMS.add(index)
-            capture = cv2.VideoCapture(index)
-            if not capture.isOpened():
-                capture.release()
-                with LOCK:
-                    ACTIVE_STREAMS.discard(index)
+            feed = CameraFeed.join(index)
+            if not feed.wait_started():
+                feed.leave()
                 self.send_json(503, {"error": "Unable to open camera"})
                 return
-            capture.set(cv2.CAP_PROP_BUFFERSIZE, 1)
             self.send_response(200)
             self.send_header("Content-Type", "multipart/x-mixed-replace; boundary=frame")
             self.send_header("Cache-Control", "no-store, no-cache, must-revalidate")
             self.send_header("Connection", "close")
             self.end_headers()
+            sent = 0
             try:
-                while not CODE_RUNNING.is_set():
-                    ok, frame = capture.read()
-                    if not ok:
-                        time.sleep(0.05)
+                while not CODE_RUNNING.is_set() and not feed.stopped:
+                    sent, payload = feed.next_jpeg(sent)
+                    if payload is None:
                         continue
-                    with LOCK:
-                        LAST_FRAMES[index] = frame.copy()
-                    ok, encoded = cv2.imencode(".jpg", frame)
-                    if not ok:
-                        continue
-                    payload = encoded.tobytes()
                     self.wfile.write(
                         b"--frame\r\nContent-Type: image/jpeg\r\nContent-Length: "
                         + str(len(payload)).encode()
@@ -593,10 +745,7 @@ class Handler(BaseHTTPRequestHandler):
             except (BrokenPipeError, ConnectionResetError):
                 pass
             finally:
-                capture.release()
-                with LOCK:
-                    ACTIVE_STREAMS.discard(index)
-                    LAST_FRAMES.pop(index, None)
+                feed.leave()
             return
 
         if parsed.path == "/api/calibration/download":
@@ -860,6 +1009,7 @@ class Handler(BaseHTTPRequestHandler):
 
 
 if __name__ == "__main__":
+    filter_jpeg_warnings()
     CALIBRATION_DIR.mkdir(parents=True, exist_ok=True)
     threading.Thread(target=watch_usb_calibrations, name="usb-import", daemon=True).start()
     watch_code_status()

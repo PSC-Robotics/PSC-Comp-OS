@@ -1,10 +1,13 @@
 """An implementation of a camera board using the april_vision library."""
 from __future__ import annotations
 
+import atexit
 import json
 import logging
+import os
 import re
 import sys
+import threading
 from collections import Counter
 from pathlib import Path
 from typing import (
@@ -42,10 +45,11 @@ def _manifest_calibration_locations(root: Path) -> list[str]:
     """Read calibration directories listed by the code USB manifest."""
     for manifest_name in ('camera-calibrations.toml', 'camera-calibrations.json'):
         manifest_path = root / manifest_name
-        if not manifest_path.is_file():
-            continue
-
         try:
+            # Inside the try: an unreadable folder raises PermissionError here, and
+            # must not stop the robot finding its cameras.
+            if not manifest_path.is_file():
+                continue
             if manifest_path.suffix == '.json':
                 manifest = json.loads(manifest_path.read_text())
             else:
@@ -75,6 +79,48 @@ def _manifest_calibration_locations(root: Path) -> list[str]:
             )
             return []
     return []
+
+
+_JPEG_WARNINGS_FILTERED = False
+
+
+def _filter_jpeg_warnings() -> None:
+    """
+    Drop libjpeg's "Corrupt JPEG data" warnings from stderr.
+
+    Some webcams (older Logitech models) pad their MJPEG pictures, and libjpeg
+    warns about it on every picture, although the pictures decode correctly.
+    OpenCV's log level doesn't cover libjpeg, so filter stderr itself, passing
+    everything else through.
+    """
+    global _JPEG_WARNINGS_FILTERED
+    if _JPEG_WARNINGS_FILTERED or not sys.platform.startswith('linux'):
+        return
+    _JPEG_WARNINGS_FILTERED = True
+    sys.stderr.flush()
+    real_stderr = os.dup(2)
+    read_end, write_end = os.pipe()
+    os.dup2(write_end, 2)
+    os.close(write_end)
+
+    def forward() -> None:
+        with os.fdopen(read_end, 'rb') as pipe, os.fdopen(real_stderr, 'wb', 0) as out:
+            for line in pipe:
+                if not line.startswith(b'Corrupt JPEG data'):
+                    out.write(line)
+
+    forwarder = threading.Thread(target=forward, name='stderr-filter', daemon=True)
+    forwarder.start()
+    restore_to = os.dup(real_stderr)
+
+    def drain() -> None:
+        # At exit, pass on everything still in the pipe, such as the traceback of
+        # a crash, which Python prints before running atexit functions.
+        sys.stderr.flush()
+        os.dup2(restore_to, 2)  # Closes the pipe's last write end, so forward() ends
+        forwarder.join(timeout=2)
+
+    atexit.register(drain)
 
 
 def _camera_calibration_locations() -> list[str]:
@@ -204,11 +250,26 @@ class AprilCamera(Board):
             }
 
         candidates = discover_camera_candidates()
-        return {
-            camera_id:
-            cls.from_id(camera_data.index, camera_data=camera_data, serial_num=camera_id)
+        calibrated = [
+            (camera_id, camera_data)
             for camera_id, camera_data in zip(assign_camera_ids(candidates), candidates)
             if camera_data.calibration is not None
+        ]
+        # One camera is set up exactly as Student Robotics' library does. With several,
+        # each asks for compressed (MJPEG) pictures at its calibration's resolution:
+        # raw pictures at those resolutions need more of the USB bus than there is for
+        # two cameras, and a camera that doesn't get its share sends no pictures at all.
+        compressed = len(calibrated) > 1
+        if compressed:
+            _filter_jpeg_warnings()
+        return {
+            camera_id: cls.from_id(
+                camera_data.index,
+                camera_data=camera_data,
+                serial_num=camera_id,
+                compressed=compressed,
+            )
+            for camera_id, camera_data in calibrated
         }
 
     def __init__(
@@ -253,6 +314,7 @@ class AprilCamera(Board):
         camera_id: int,
         camera_data: CalibratedCamera,
         serial_num: str,
+        compressed: bool = False,
     ) -> 'AprilCamera':
         """
         Create a camera from an ID.
@@ -260,13 +322,20 @@ class AprilCamera(Board):
         :param camera_id: The ID of the camera to create.
         :param camera_data: The calibration data for the camera.
         :param serial_num: The serial number of the camera.
+        :param compressed: Ask the camera for MJPEG pictures, to share the USB bus
+            with other cameras. A camera without MJPEG stays raw.
         :return: The camera object.
         """
+        camera_parameters = None
+        if compressed:
+            import cv2
+            camera_parameters = [(cv2.CAP_PROP_FOURCC, cv2.VideoWriter.fourcc(*'MJPG'))]
         # The camera source handles the connection between the camera and the processor
         camera_source = USBCamera.from_calibration_file(
             camera_id,
             calibration_file=camera_data.calibration,
             vidpid=camera_data.vidpid,
+            camera_parameters=camera_parameters,
         )
         return cls(
             camera_source,

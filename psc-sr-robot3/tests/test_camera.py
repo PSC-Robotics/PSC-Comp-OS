@@ -39,11 +39,14 @@ def test_discover_calibrated_packaged_and_custom_cameras(monkeypatch) -> None:
     monkeypatch.setattr(camera, "find_cameras", find_cameras)
     monkeypatch.setattr(camera, "IN_SIMULATOR", False)
     monkeypatch.setattr(camera, "_usb_port", lambda index: None)
-    monkeypatch.setattr(
-        camera.AprilCamera,
-        "from_id",
-        classmethod(lambda cls, camera_id, camera_data, serial_num: camera_data),
-    )
+    compressed = []
+    monkeypatch.setattr(camera, "_filter_jpeg_warnings", lambda: None)
+
+    def from_id(cls, camera_id, camera_data, serial_num, compressed_arg=False, **kwargs):
+        compressed.append(kwargs.get("compressed", compressed_arg))
+        return camera_data
+
+    monkeypatch.setattr(camera.AprilCamera, "from_id", classmethod(from_id))
 
     candidates = camera.discover_camera_candidates()
     discovered = camera.AprilCamera._discover()
@@ -53,6 +56,40 @@ def test_discover_calibrated_packaged_and_custom_cameras(monkeypatch) -> None:
     assert set(discovered) == {"Logitech C920 - 0", "Custom webcam - 1"}
     assert discovered["Logitech C920 - 0"].calibration == cameras[0].calibration
     assert discovered["Custom webcam - 1"].calibration == cameras[1].calibration
+    # Two calibrated cameras share the USB bus, so both use MJPEG
+    assert compressed == [True, True]
+
+
+def test_one_camera_is_set_up_as_sr_does(monkeypatch) -> None:
+    """With one calibrated camera, nothing differs from Student Robotics' library."""
+    cameras = [
+        SimpleNamespace(
+            index=0, name="Logitech C270", calibration="/c270.xml", vidpid="046d:0825",
+        ),
+        SimpleNamespace(index=2, name="Uncalibrated", calibration=None, vidpid="abcd:0001"),
+    ]
+    calls = []
+    monkeypatch.setattr(
+        camera, "find_cameras", lambda locations, include_uncalibrated=False: cameras,
+    )
+    monkeypatch.setattr(camera, "IN_SIMULATOR", False)
+    monkeypatch.setattr(camera, "_usb_port", lambda index: None)
+    monkeypatch.setattr(camera, "_filter_jpeg_warnings", lambda: calls.append("filter"))
+
+    def from_calibration_file(cls, *args, **kwargs):
+        calls.append(kwargs)
+        return SimpleNamespace(calibration=None)
+
+    monkeypatch.setattr(
+        camera.USBCamera, "from_calibration_file", classmethod(from_calibration_file),
+    )
+    monkeypatch.setattr(camera, "Processor", lambda *args, **kwargs: None)
+
+    camera.AprilCamera._discover()
+
+    assert calls == [
+        {"calibration_file": "/c270.xml", "vidpid": "046d:0825", "camera_parameters": None},
+    ]
 
 
 @pytest.mark.parametrize(
@@ -77,6 +114,15 @@ def test_usb_calibration_manifest(
         "/team",
         str(calibration_dir),
     ]
+
+
+def test_unreadable_manifest_folder_is_skipped(tmp_path, monkeypatch) -> None:
+    """A folder the robot can't read is ignored, not an error that hides every camera."""
+    def denied(self):
+        raise PermissionError(13, "Permission denied", str(self))
+
+    monkeypatch.setattr(camera.Path, "is_file", denied)
+    assert camera._manifest_calibration_locations(tmp_path) == []
 
 
 def _cam(index, serial=None, name="Webcam", calibration="/cal.xml"):
@@ -142,7 +188,7 @@ def test_discover_keys_cameras_by_id_and_skips_uncalibrated(monkeypatch) -> None
     monkeypatch.setattr(
         camera.AprilCamera,
         "from_id",
-        classmethod(lambda cls, camera_id, camera_data, serial_num: (serial_num, camera_data)),
+        classmethod(lambda cls, _, camera_data, serial_num, **kw: (serial_num, camera_data)),
     )
 
     discovered = camera.AprilCamera._discover()
